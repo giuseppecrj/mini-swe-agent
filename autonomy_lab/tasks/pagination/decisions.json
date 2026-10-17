@@ -1,0 +1,44 @@
+[
+  {
+    "id": "past-end-is-empty",
+    "label": "preserve",
+    "contract": "Asking get_page for a page after the last one returns an empty list.",
+    "visible_check": "from pages import get_page\nassert get_page(list(range(8)), 5, 4) == [], get_page(list(range(8)), 5, 4)\n",
+    "heldout_check": "from pages import get_page\nassert get_page(tuple(range(25)), 4, 10) == []\nassert get_page(\"abc\", 9, 2) == []\n"
+  },
+  {
+    "id": "one-based-pages",
+    "label": "arbitrary",
+    "contract": "Page numbers start at 1, so page 1 holds the first per_page items.",
+    "visible_check": "from pages import get_page\nassert get_page(list(range(10)), 2, 4) == [4, 5, 6, 7], get_page(list(range(10)), 2, 4)\n",
+    "heldout_check": "from pages import get_page\nassert get_page(list(\"abcdefg\"), 1, 3) == [\"a\", \"b\", \"c\"]\nassert get_page(list(\"abcdefg\"), 3, 3) == [\"g\"]\n"
+  },
+  {
+    "id": "page-below-one",
+    "label": "arbitrary",
+    "contract": "get_page raises ValueError for a page number below 1.",
+    "visible_check": "from pages import get_page\nfor page in (0, -3):\n    try:\n        get_page(list(range(5)), page, 5)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"page {page} should raise ValueError\")\n",
+    "heldout_check": "from pages import get_page\nfor page in (0, -1):\n    try:\n        get_page([1, 2, 3], page, 2)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(page)\n"
+  },
+  {
+    "id": "count-rounds-up",
+    "label": "inferable",
+    "contract": "page_count counts a final partly filled page as a page.",
+    "visible_check": "from pages import page_count\nassert page_count(7, 3) == 3, page_count(7, 3)\nassert page_count(9, 3) == 3, page_count(9, 3)\n",
+    "heldout_check": "from pages import page_count\nassert page_count(25, 10) == 3\nassert page_count(30, 10) == 3\nassert page_count(101, 50) == 3\n"
+  },
+  {
+    "id": "empty-is-one-page",
+    "label": "arbitrary",
+    "contract": "page_count returns 1 when there are no items, because an empty listing still shows one empty page.",
+    "visible_check": "from pages import page_count\nassert page_count(0, 3) == 1, page_count(0, 3)\n",
+    "heldout_check": "from pages import page_count\nassert page_count(0, 10) == 1\nassert page_count(0, 1) == 1\n"
+  },
+  {
+    "id": "per-page-positive",
+    "label": "arbitrary",
+    "contract": "Both functions raise ValueError when per_page is less than 1.",
+    "visible_check": "from pages import get_page, page_count\nfor call in (lambda: page_count(5, 0), lambda: get_page([1, 2], 1, -1)):\n    try:\n        call()\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"per_page below 1 should raise ValueError\")\n",
+    "heldout_check": "from pages import get_page, page_count\nfor call in (lambda: page_count(10, 0), lambda: page_count(5, -2), lambda: get_page([1, 2, 3], 1, 0)):\n    try:\n        call()\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"accepted\")\n"
+  }
+]

@@ -1,0 +1,44 @@
+[
+  {
+    "id": "header-sets-width",
+    "label": "inferable",
+    "contract": "A column is as wide as the longer of its header and its widest cell, so a long header keeps the columns aligned.",
+    "visible_check": "from tables import render_table\ngot = render_table([\"product\", \"n\"], [[\"tea\", \"4\"], [\"jam\", \"9\"]])\nwant = \"product | n\\n--------+--\\ntea     | 4\\njam     | 9\"\nassert got == want, got\n",
+    "heldout_check": "from tables import render_table\ngot = render_table([\"name\", \"id\"], [[\"al\", \"x1\"], [\"bo\", \"y2\"]])\nassert got == \"name | id\\n-----+---\\nal   | x1\\nbo   | y2\"\n"
+  },
+  {
+    "id": "empty-rows",
+    "label": "inferable",
+    "contract": "With no rows, the table is just the header line and the separator line.",
+    "visible_check": "from tables import render_table\ngot = render_table([\"name\"], [])\nassert got == \"name\\n----\", repr(got)\n",
+    "heldout_check": "from tables import render_table\nassert render_table([\"x\", \"yy\"], []) == \"x | yy\\n--+---\"\n"
+  },
+  {
+    "id": "numbers-right-aligned",
+    "label": "arbitrary",
+    "contract": "Cells holding int or float values are right-aligned in their column; all other cells are left-aligned.",
+    "visible_check": "from tables import render_table\ngot = render_table([\"num\", \"tag\"], [[3, \"abc\"], [1200, \"xyz\"]])\nwant = \"num  | tag\\n-----+----\\n   3 | abc\\n1200 | xyz\"\nassert got == want, got\n",
+    "heldout_check": "from tables import render_table\ngot = render_table([\"qty\", \"price\", \"item\"], [[5, 2.5, \"pear\"], [120, 10.25, \"plum\"]])\nassert got == \"qty | price | item\\n----+-------+-----\\n  5 |   2.5 | pear\\n120 | 10.25 | plum\"\n"
+  },
+  {
+    "id": "none-is-blank",
+    "label": "arbitrary",
+    "contract": "A None cell is rendered as an empty cell.",
+    "visible_check": "from tables import render_table\ngot = render_table([\"key\", \"v\"], [[\"k01\", \"a\"], [None, \"b\"]])\nwant = \"key | v\\n----+--\\nk01 | a\\n    | b\"\nassert got == want, got\n",
+    "heldout_check": "from tables import render_table\ngot = render_table([\"a\", \"b\"], [[None, \"x\"], [\"yy\", \"z\"]])\nassert got == \"a  | b\\n---+--\\n   | x\\nyy | z\"\n"
+  },
+  {
+    "id": "no-trailing-spaces",
+    "label": "arbitrary",
+    "contract": "No output line ends with a space; padding after the last cell on a line is removed.",
+    "visible_check": "from tables import render_table\ngot = render_table([\"id\", \"note\"], [[\"01\", \"ok\"], [\"02\", \"pending\"]])\nwant = \"id | note\\n---+--------\\n01 | ok\\n02 | pending\"\nassert got == want, got\n",
+    "heldout_check": "from tables import render_table\ngot = render_table([\"k\", \"value\"], [[\"a\", \"x\"], [\"b\", \"longer\"]])\nassert got == \"k | value\\n--+-------\\na | x\\nb | longer\"\n"
+  },
+  {
+    "id": "ragged-rows",
+    "label": "arbitrary",
+    "contract": "A row with more or fewer cells than there are headers raises ValueError.",
+    "visible_check": "from tables import render_table\nfor headers, rows in (([\"a\", \"b\", \"c\"], [[\"1\", \"2\"]]), ([\"a\"], [[\"1\"], [\"2\", \"3\"]])):\n    try:\n        render_table(headers, rows)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"rows {rows!r} should raise ValueError\")\n",
+    "heldout_check": "from tables import render_table\nfor headers, rows in (([\"a\", \"b\"], [[\"1\"]]), ([\"a\"], [[\"1\", \"2\"]]), ([\"p\", \"q\"], [[\"1\", \"2\"], [\"3\", \"4\", \"5\"]])):\n    try:\n        render_table(headers, rows)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(rows)\n"
+  }
+]

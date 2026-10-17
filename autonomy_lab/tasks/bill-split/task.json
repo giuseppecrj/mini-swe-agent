@@ -1,0 +1,7 @@
+{
+  "id": "bill-split",
+  "module": "split.py",
+  "brief": "split_amount() produces bad splits",
+  "version": 1,
+  "author": "coordinator"
+}

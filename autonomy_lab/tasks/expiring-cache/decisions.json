@@ -1,0 +1,44 @@
+[
+  {
+    "id": "missing-key-default",
+    "label": "preserve",
+    "contract": "get returns its default argument (None unless given) for a key that was never stored.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(3, 60)\nassert cache.get(\"x\", 5) is None\nassert cache.get(\"x\", 5, default=0) == 0, cache.get(\"x\", 5, default=0)\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(2, 10)\ncache.put(\"known\", 1, 0)\nassert cache.get(\"nope\", 0) is None\nassert cache.get(\"nope\", 0, \"fallback\") == \"fallback\"\n"
+  },
+  {
+    "id": "expiry-boundary",
+    "label": "arbitrary",
+    "contract": "An entry stored at time t is returned while now < t + ttl and has expired once now >= t + ttl.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(4, 5)\ncache.put(\"a\", \"A\", 20)\ncache.put(\"b\", \"B\", 20)\nassert cache.get(\"a\", 24) == \"A\", cache.get(\"a\", 24)\nassert cache.get(\"b\", 25) is None, cache.get(\"b\", 25)\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(4, 10)\ncache.put(\"k1\", \"v1\", 100)\ncache.put(\"k2\", \"v2\", 100)\nassert cache.get(\"k1\", 109) == \"v1\"\nassert cache.get(\"k2\", 110) is None\n"
+  },
+  {
+    "id": "fixed-lifetime",
+    "label": "arbitrary",
+    "contract": "Reading an entry with get does not extend its lifetime.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(4, 30)\ncache.put(\"a\", \"A\", 100)\nassert cache.get(\"a\", 120) == \"A\"\nassert cache.get(\"a\", 135) is None, cache.get(\"a\", 135)\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(4, 10)\ncache.put(\"k\", \"v\", 0)\nassert cache.get(\"k\", 5) == \"v\"\nassert cache.get(\"k\", 12) is None\n"
+  },
+  {
+    "id": "eviction-order",
+    "label": "arbitrary",
+    "contract": "When a new key is put into a full cache, the entry whose most recent put is oldest is evicted, however recently it was read.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(2, 100)\ncache.put(\"x\", \"X\", 0)\ncache.put(\"y\", \"Y\", 1)\nassert cache.get(\"x\", 2) == \"X\"\ncache.put(\"z\", \"Z\", 3)\nassert cache.get(\"x\", 4) is None, \"x should have been evicted\"\nassert cache.get(\"y\", 4) == \"Y\" and cache.get(\"z\", 4) == \"Z\"\ncache = ExpiringCache(3, 100)\ncache.put(\"p\", \"P\", 0)\ncache.put(\"q\", \"Q\", 1)\ncache.put(\"p\", \"P2\", 2)\ncache.put(\"r\", \"R\", 3)\ncache.put(\"s\", \"S\", 4)\nassert cache.get(\"q\", 5) is None, \"q should have been evicted\"\nassert cache.get(\"p\", 5) == \"P2\" and cache.get(\"r\", 5) == \"R\" and cache.get(\"s\", 5) == \"S\"\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(3, 100)\ncache.put(\"a\", \"A\", 0)\ncache.put(\"b\", \"B\", 1)\ncache.put(\"c\", \"C\", 2)\nassert cache.get(\"a\", 3) == \"A\"\ncache.put(\"d\", \"D\", 4)\nassert cache.get(\"a\", 5) is None\nassert cache.get(\"b\", 5) == \"B\" and cache.get(\"c\", 5) == \"C\" and cache.get(\"d\", 5) == \"D\"\ncache = ExpiringCache(3, 100)\ncache.put(\"a\", \"A\", 0)\ncache.put(\"b\", \"B\", 1)\ncache.put(\"a\", \"A2\", 2)\ncache.put(\"c\", \"C\", 3)\ncache.put(\"d\", \"D\", 4)\nassert cache.get(\"b\", 5) is None\nassert cache.get(\"a\", 5) == \"A2\" and cache.get(\"c\", 5) == \"C\" and cache.get(\"d\", 5) == \"D\"\n"
+  },
+  {
+    "id": "update-does-not-evict",
+    "label": "inferable",
+    "contract": "Putting a key that is already stored replaces its value and never evicts another entry.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(3, 50)\ncache.put(\"k1\", 1, 0)\ncache.put(\"k2\", 2, 0)\ncache.put(\"k3\", 3, 0)\ncache.put(\"k2\", 20, 1)\nassert cache.get(\"k1\", 2) == 1, \"k1 should still be cached\"\nassert cache.get(\"k2\", 2) == 20 and cache.get(\"k3\", 2) == 3\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(2, 10)\ncache.put(\"a\", \"A\", 0)\ncache.put(\"b\", \"B\", 1)\ncache.put(\"b\", \"B2\", 2)\nassert cache.get(\"a\", 3) == \"A\"\nassert cache.get(\"b\", 3) == \"B2\"\n"
+  },
+  {
+    "id": "invalid-settings",
+    "label": "arbitrary",
+    "contract": "Creating the cache with a capacity below 1 or a ttl of zero or less raises ValueError.",
+    "visible_check": "from expiring_cache import ExpiringCache\nfor capacity, ttl in ((0, 60), (2, 0)):\n    try:\n        ExpiringCache(capacity, ttl)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"ExpiringCache({capacity}, {ttl}) should raise ValueError\")\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\nfor capacity, ttl in ((0, 10), (-1, 10), (3, 0), (3, -5)):\n    try:\n        ExpiringCache(capacity, ttl)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError((capacity, ttl))\n"
+  }
+]

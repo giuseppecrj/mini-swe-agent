@@ -1,0 +1,44 @@
+[
+  {
+    "id": "exact-total",
+    "label": "inferable",
+    "contract": "The shares are integers that always add up exactly to total_cents.",
+    "visible_check": "from split import split_amount\nfor total, weights in ((200, [1, 1, 1]), (17, [1, 1, 1, 1, 1])):\n    shares = split_amount(total, weights)\n    assert sum(shares) == total, (total, weights, shares)\n    assert all(isinstance(s, int) for s in shares), shares\n",
+    "heldout_check": "from split import split_amount\nfor total, weights in ((1000, [1] * 7), (100, [1, 1, 1, 1, 1, 1]), (999, [2, 3, 5, 7])):\n    shares = split_amount(total, weights)\n    assert sum(shares) == total, (total, weights, shares)\n    assert all(isinstance(s, int) for s in shares)\n"
+  },
+  {
+    "id": "largest-remainder",
+    "label": "arbitrary",
+    "contract": "Cents left over after rounding every share down go, one each, to the parties whose exact shares had the largest fractional parts.",
+    "visible_check": "from split import split_amount\nassert split_amount(13, [1, 3]) == [3, 10], split_amount(13, [1, 3])\nassert split_amount(5, [1, 1, 2]) == [1, 1, 3], split_amount(5, [1, 1, 2])\n",
+    "heldout_check": "from split import split_amount\nassert split_amount(101, [1, 1, 2]) == [25, 25, 51]\nassert split_amount(7, [1, 2]) == [2, 5]\n"
+  },
+  {
+    "id": "ties-to-earlier",
+    "label": "arbitrary",
+    "contract": "When parties' fractional parts tie, the party that comes earlier in the weights list gets the extra cent first.",
+    "visible_check": "from split import split_amount\nassert split_amount(7, [1, 1]) == [4, 3], split_amount(7, [1, 1])\nassert split_amount(10, [1, 1, 1]) == [4, 3, 3], split_amount(10, [1, 1, 1])\n",
+    "heldout_check": "from split import split_amount\nassert split_amount(100, [1, 1, 1]) == [34, 33, 33]\nassert split_amount(5, [1, 1, 1, 1]) == [2, 1, 1, 1]\n"
+  },
+  {
+    "id": "zero-weight-share",
+    "label": "preserve",
+    "contract": "A party with weight 0 receives 0 cents.",
+    "visible_check": "from split import split_amount\nassert split_amount(40, [1, 0, 3]) == [10, 0, 30], split_amount(40, [1, 0, 3])\n",
+    "heldout_check": "from split import split_amount\nassert split_amount(90, [0, 1, 2]) == [0, 30, 60]\nassert split_amount(10, [0, 1]) == [0, 10]\n"
+  },
+  {
+    "id": "invalid-weights",
+    "label": "arbitrary",
+    "contract": "An empty weights list, any negative weight, or weights that are all zero raise ValueError.",
+    "visible_check": "from split import split_amount\nfor weights in ([], [-1, 2], [0]):\n    try:\n        split_amount(100, weights)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"weights {weights!r} should raise ValueError\")\n",
+    "heldout_check": "from split import split_amount\nfor weights in ((), [0, 0, 0], [5, -1, 2]):\n    try:\n        split_amount(60, weights)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(weights)\n"
+  },
+  {
+    "id": "negative-total",
+    "label": "arbitrary",
+    "contract": "A negative total_cents raises ValueError.",
+    "visible_check": "from split import split_amount\ntry:\n    split_amount(-50, [1, 1])\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError(\"a negative total should raise ValueError\")\n",
+    "heldout_check": "from split import split_amount\nfor total, weights in ((-10, [1, 1, 1]), (-90, [1, 2])):\n    try:\n        split_amount(total, weights)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(total)\n"
+  }
+]

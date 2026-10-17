@@ -1,0 +1,37 @@
+[
+  {
+    "id": "one-count-per-bin",
+    "label": "preserve",
+    "contract": "The result has exactly one count per bin, len(edges) - 1 in all, including bins that receive no values.",
+    "visible_check": "from binning import histogram\nassert histogram([], [0, 10, 20]) == [0, 0], histogram([], [0, 10, 20])\nassert histogram([15], [0, 10, 20]) == [0, 1], histogram([15], [0, 10, 20])\n",
+    "heldout_check": "from binning import histogram\nassert histogram([], [0, 1, 2, 3]) == [0, 0, 0]\nassert histogram([1, 2.5, 7, 7.5, 9], [0, 5, 10]) == [2, 3]\n"
+  },
+  {
+    "id": "uneven-bins",
+    "label": "inferable",
+    "contract": "Bins may have different widths, and each value is counted in the bin given by the actual edges.",
+    "visible_check": "from binning import histogram\ngot = histogram([0.5, 1.5, 4, 9], [0, 1, 2, 10])\nassert got == [1, 1, 2], got\n",
+    "heldout_check": "from binning import histogram\nassert histogram([1, 3, 3, 50], [0, 2, 10, 100]) == [1, 2, 1]\nassert histogram([0.1, 0.2, 0.9], [0, 0.5, 1000]) == [2, 1]\n"
+  },
+  {
+    "id": "lower-edge-inclusive",
+    "label": "arbitrary",
+    "contract": "Each bin includes its lower edge, so a value equal to an edge (other than the last edge) is counted in the bin that starts there.",
+    "visible_check": "from binning import histogram\nassert histogram([3], [1, 3, 5]) == [0, 1], histogram([3], [1, 3, 5])\nassert histogram([1], [1, 3, 5]) == [1, 0], histogram([1], [1, 3, 5])\n",
+    "heldout_check": "from binning import histogram\nassert histogram([5, 0], [0, 5, 10]) == [1, 1]\nassert histogram([2, 4], [0, 2, 4, 6]) == [0, 1, 1]\n"
+  },
+  {
+    "id": "last-edge-included",
+    "label": "arbitrary",
+    "contract": "A value equal to the last edge is counted in the last bin.",
+    "visible_check": "from binning import histogram\nassert histogram([20], [0, 10, 20]) == [0, 1], histogram([20], [0, 10, 20])\n",
+    "heldout_check": "from binning import histogram\nassert histogram([10], [0, 5, 10]) == [0, 1]\nassert histogram([6, 6, 1], [0, 3, 6]) == [1, 2]\n"
+  },
+  {
+    "id": "out-of-range-raises",
+    "label": "arbitrary",
+    "contract": "A value below the first edge or above the last edge raises ValueError.",
+    "visible_check": "from binning import histogram\nfor values in ([-5], [25]):\n    try:\n        histogram(values, [0, 10, 20])\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"values {values!r} should raise ValueError\")\n",
+    "heldout_check": "from binning import histogram\nfor values, edges in (([-1], [0, 10]), ([10.5], [0, 5, 10]), ([1, 2, 300], [0, 4, 8])):\n    try:\n        histogram(values, edges)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(values)\n"
+  }
+]
