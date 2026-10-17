@@ -1,0 +1,30 @@
+[
+  {
+    "id": "order",
+    "label": "arbitrary",
+    "contract": "clamp(x, lo, hi) raises ValueError when both bounds are given and lo > hi.",
+    "visible_check": "from lab_ranger import clamp\ntry:\n    clamp(1, 3, 2)\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError('expected ValueError')\n",
+    "heldout_check": "from lab_ranger import clamp\ntry:\n    clamp(1, 5, 0)\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError('expected ValueError')\n"
+  },
+  {
+    "id": "bool",
+    "label": "arbitrary",
+    "contract": "clamp(x, lo, hi) raises TypeError when x is a bool.",
+    "visible_check": "from lab_ranger import clamp\ntry:\n    clamp(False, 0, 1)\nexcept TypeError:\n    pass\nelse:\n    raise AssertionError('expected TypeError')\n",
+    "heldout_check": "from lab_ranger import clamp\ntry:\n    clamp(True, 0, 5)\nexcept TypeError:\n    pass\nelse:\n    raise AssertionError('expected TypeError')\n"
+  },
+  {
+    "id": "open-bound",
+    "label": "arbitrary",
+    "contract": "clamp(x, lo, hi) treats a bound of None as no limit on that side.",
+    "visible_check": "from lab_ranger import clamp\nassert clamp(7, 0, None) == 7\n",
+    "heldout_check": "from lab_ranger import clamp\nassert clamp(-3, None, 5) == -3\nassert clamp(9, 0, None) == 9\n"
+  },
+  {
+    "id": "inclusive",
+    "label": "preserve",
+    "contract": "clamp(x, lo, hi) keeps a value equal to a bound, so clamp(5, 0, 5) == 5.",
+    "visible_check": "from lab_ranger import clamp\nassert clamp(3, 0, 3) == 3\n",
+    "heldout_check": "from lab_ranger import clamp\nassert clamp(5, 0, 5) == 5\nassert clamp(0, 0, 5) == 0\nassert clamp(9, 0, 5) == 5\nassert clamp(-1, 0, 5) == 0\n"
+  }
+]

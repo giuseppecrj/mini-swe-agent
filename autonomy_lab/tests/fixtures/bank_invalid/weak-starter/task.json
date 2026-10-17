@@ -1,0 +1,7 @@
+{
+  "id": "weak-starter",
+  "module": "lab_weak.py",
+  "brief": "Fix slug(text) in lab_weak.py so it turns a short title into a URL slug.",
+  "version": 1,
+  "author": "coordinator"
+}
