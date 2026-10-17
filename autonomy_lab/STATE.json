@@ -50,7 +50,7 @@
         "artifact upload"
       ]
     },
-    "real_pi_trials_completed": 1,
+    "real_pi_trials_completed": 25,
     "published_performance_claims": false,
     "real_pi_runs": [
       {
@@ -90,13 +90,35 @@
       "thinking": "high",
       "approved_by_user": "2026-10-17"
     },
-    "pilot_status": "not started; requires separate user go-ahead"
+    "pilot_status": "completed 2026-10-17: run-20261017T131959Z-5b17ab; see SESSION_HANDOFF.md section 9",
+    "pilot_results": {
+      "run_id": "run-20261017T131959Z-5b17ab",
+      "git_commit": "69ca419",
+      "trials": 24,
+      "accepted": 18,
+      "model": "openai-codex/gpt-5.6-sol",
+      "thinking": "high",
+      "repetitions_per_cell": 3,
+      "order": "fixed",
+      "cells": {
+        "b1-*": "12/12",
+        "b2-shallow-basic": "0/3",
+        "b2-shallow-rich": "0/3",
+        "b2-deep-basic": "3/3",
+        "b2-deep-rich": "3/3"
+      },
+      "all_failures": "atomic-ledger hidden requirements absent from the shallow brief",
+      "ledger_contract_vs_brief": "6/6 vs 0/6, Fisher two-sided p~0.002, single task",
+      "total_tokens": 272922,
+      "reported_cost_usd": 1.0052
+    }
   },
   "next_actions": [
-    "Run the 2x2x2 pilot (24 trials) with --model openai-codex/gpt-5.6-sol --thinking high, after user go-ahead",
-    "Classify infrastructure failures (provider rejection before any tool call) separately from agent failures when summarizing",
-    "Expect a ceiling at breadth 1; plan harder or more numerous tasks before fitting any model",
-    "Address the shallow-brief confound: atomic-ledger held-out checks require behaviour the shallow brief does not state"
+    "Decide the write-up framing (see coordinator notes) before adding tasks",
+    "Separate inferable from arbitrary hidden requirements, so shallow failures are not purely missing information",
+    "Decouple breadth from task identity: several tasks per difficulty, randomized task order and condition order",
+    "Measure whether agents surface ambiguity (assumption reporting) as an outcome, not only acceptance",
+    "Add a second model family before any claim about model-independent effects"
   ],
   "constraints": [
     "No main-branch modifications without explicit instruction",

@@ -267,3 +267,37 @@ Runner problems found and fixed after these runs:
 Confound noted for the pilot: in the shallow condition, atomic-ledger's held-out checks require behaviour the brief never states (e.g. KeyError for a missing sender, rejecting sender == recipient). Shallow failures there partly measure missing information, not planning depth.
 
 Next falsifiable hypothesis: with gpt-5.6-sol at thinking high, breadth-1 deep conditions accept ≥90% of trials, and any between-condition difference appears only in shallow conditions involving atomic-ledger. If that holds, harder or more numerous tasks are a better investment than more repetitions of these two.
+
+## 9. First 2x2x2 pilot (2026-10-17)
+
+Run run-20261017T131959Z-5b17ab at commit 69ca419. Pi 1.3.0, openai-codex/gpt-5.6-sol at thinking high, 3 repetitions per cell, timeout 600 s, fixed (non-randomized) condition order, no human interventions. 24 trials in 9m42s, 272,922 tokens, provider-reported $1.01 (probably notional under ChatGPT OAuth). Every trial settled, used the requested model and thinking level, left its spec and visible checks intact, and had 0 retries and 0 tool errors.
+
+| Breadth | Depth | Verification | Accepted | Mean s | Mean turns |
+|---|---|---|---|---|---|
+| 1 | shallow | basic | 3/3 | 16.7 | 4.0 |
+| 1 | shallow | rich | 3/3 | 12.2 | 4.0 |
+| 1 | deep | basic | 3/3 | 10.3 | 4.0 |
+| 1 | deep | rich | 3/3 | 9.7 | 4.0 |
+| 2 | shallow | basic | 0/3 | 55.7 | 5.7 |
+| 2 | shallow | rich | 0/3 | 35.2 | 5.3 |
+| 2 | deep | basic | 3/3 | 26.6 | 4.3 |
+| 2 | deep | rich | 3/3 | 27.1 | 6.3 |
+
+ordered-merge passed held-out checks in 24/24 trials. Every failure is in atomic-ledger. Per-requirement probe of each breadth-2 ledger.py:
+
+| Hidden requirement | In shallow brief | In rich visible checks | shallow+basic | shallow+rich | deep (either) |
+|---|---|---|---|---|---|
+| input not mutated | no | yes | 0/3 | 3/3 | 6/6 |
+| invalid amounts (-2, 0, 2.0, True) raise ValueError | no | yes | 0/3 | 3/3 | 6/6 |
+| sender == recipient raises ValueError | no | no | 0/3 | 0/3 | 6/6 |
+| empty sender raises ValueError | no | no | 0/3 | 2/3 | 6/6 |
+| missing sender raises KeyError | no | no | 3/3 | 2/3 | 6/6 |
+
+Observations:
+- With the contract, ledger acceptance was 6/6 (Wilson 95% CI 0.61\u20131.00). With the brief it was 0/6 (CI 0.00\u20130.39). Fisher exact two-sided p \u2248 0.002 for this single task.
+- Rich visible checks closed exactly the requirements they encode and none beyond them. Without the contract, rich checks did not rescue acceptance.
+- Shallow agents made plausible but different consequential decisions: a self-transfer as a no-op, keeping the starter's in-place mutation, ValueError for an unknown sender. None of their final messages flagged an ambiguity or stated an assumption; all reported success.
+- Breadth is confounded with task identity: breadth 2 is the only way atomic-ledger enters the design. This pilot shows no breadth effect separable from "contains the underspecified task".
+- Shallow trials took about 1.3\u20132x longer than deep at breadth 2 and still failed.
+
+What this does and does not show: for one model and one underspecified task, outcome was determined by whether each consequential decision was settled in the contract or a visible check. It does not establish an effect of planning depth in general, a q-model fit, or generality across tasks or models. Held-out requirements that the brief does not mention measure missing information, which the deep condition supplies directly.
