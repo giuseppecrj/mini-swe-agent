@@ -110,12 +110,24 @@ def pi_command(model, thinking, prompt, pi_binary="pi"):
     # Disable ambient skills, extensions, context files, MCP, and project-local
     # configuration so that a treatment cannot accidentally see the handoff.
     return [
-        pi_binary, "--mode", "json", "--no-session",
-        "--no-extensions", "--no-skills", "--no-prompt-templates",
-        "--no-context-files", "--no-mcp", "--no-approve",
-        "--tools", "read,bash,edit,write",
-        "--model", model, "--thinking", thinking,
-        "--", prompt,
+        pi_binary,
+        "--mode",
+        "json",
+        "--no-session",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-context-files",
+        "--no-mcp",
+        "--no-approve",
+        "--tools",
+        "read,bash,edit,write",
+        "--model",
+        model,
+        "--thinking",
+        thinking,
+        "--",
+        prompt,
     ]
 
 
@@ -144,9 +156,7 @@ def execute_pi(workspace, log_dir, prompt, model, thinking, pi_binary, timeout):
     command = pi_command(model, thinking, prompt, pi_binary=pi_binary)
     started = time.monotonic()
     expired = False
-    with events_path.open("w", encoding="utf-8") as events, stderr_path.open(
-        "w", encoding="utf-8"
-    ) as errors:
+    with events_path.open("w", encoding="utf-8") as events, stderr_path.open("w", encoding="utf-8") as errors:
         process = subprocess.Popen(
             command,
             cwd=workspace,
@@ -189,17 +199,14 @@ def safe_trial_scope(workspace, selected, expected_checks, expected_prompt):
 
 
 def pi_version(pi_binary):
-    result = subprocess.run(
-        [pi_binary, "--version"], text=True, capture_output=True, timeout=15
-    )
+    result = subprocess.run([pi_binary, "--version"], text=True, capture_output=True, timeout=15)
     return result.stdout.strip() or result.stderr.strip() or "unknown"
 
 
 def git_head():
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True,
-            stderr=subprocess.DEVNULL, timeout=5
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=5
         ).strip()
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
@@ -252,9 +259,7 @@ def run_experiment(args):
             "Token cost is provider-reported and may be unavailable or incomplete.",
         ],
     }
-    (root / "run-metadata.json").write_text(
-        json.dumps(metadata, indent=2), encoding="utf-8"
-    )
+    (root / "run-metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     results = []
     for breadth in breadths:
@@ -275,25 +280,36 @@ def run_experiment(args):
                     print("START " + trial_id, flush=True)
                     try:
                         run = execute_pi(
-                            workspace, log_dir, prompt, args.model, args.thinking,
-                            args.pi_binary, args.timeout,
+                            workspace,
+                            log_dir,
+                            prompt,
+                            args.model,
+                            args.thinking,
+                            args.pi_binary,
+                            args.timeout,
                         )
                     except OSError as exc:
                         run = {
-                            "exit_code": None, "timed_out": False, "seconds": 0,
-                            "settled": False, "aborted": False,
-                            "assistant_errors": 1, "tool_calls": 0, "tool_errors": 0,
-                            "assistant_turns": 0, "retries": 0,
-                            "total_tokens": 0, "reported_cost_usd": None,
-                            "model_ids": [], "thinking_levels": [],
+                            "exit_code": None,
+                            "timed_out": False,
+                            "seconds": 0,
+                            "settled": False,
+                            "aborted": False,
+                            "assistant_errors": 1,
+                            "tool_calls": 0,
+                            "tool_errors": 0,
+                            "assistant_turns": 0,
+                            "retries": 0,
+                            "total_tokens": 0,
+                            "reported_cost_usd": None,
+                            "model_ids": [],
+                            "thinking_levels": [],
                             "assistant_messages": 0,
                             "assistant_messages_missing_runtime": 0,
                             "invalid_json_lines": 0,
                             "stderr_tail": str(exc),
                         }
-                    scope_ok = safe_trial_scope(
-                        workspace, selected, expected_checks, expected_prompt
-                    )
+                    scope_ok = safe_trial_scope(workspace, selected, expected_checks, expected_prompt)
                     passed, grade = check_candidate(workspace, selected, "mock")
                     complete = bool(
                         run["exit_code"] == 0
@@ -305,10 +321,15 @@ def run_experiment(args):
                     runtime_ok = runtime_matches_request(run, args.model, args.thinking)
                     accepted = passed and complete and scope_ok and runtime_ok
                     record = {
-                        "trial_id": trial_id, "breadth": breadth, "depth": depth,
-                        "verification": verification, "repetition": repetition,
-                        "accepted": accepted, "held_out_tests_passed": passed,
-                        "task_scope_intact": scope_ok, "agent_completed": complete,
+                        "trial_id": trial_id,
+                        "breadth": breadth,
+                        "depth": depth,
+                        "verification": verification,
+                        "repetition": repetition,
+                        "accepted": accepted,
+                        "held_out_tests_passed": passed,
+                        "task_scope_intact": scope_ok,
+                        "agent_completed": complete,
                         "runtime_matches_request": runtime_ok,
                         "model_requested": args.model,
                         "thinking_requested": args.thinking,
@@ -320,8 +341,7 @@ def run_experiment(args):
                     with (root / "trials.jsonl").open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps(record) + "\n")
                     print(
-                        "DONE " + trial_id + " accepted=" + str(accepted)
-                        + " turns=" + str(run["assistant_turns"]),
+                        "DONE " + trial_id + " accepted=" + str(accepted) + " turns=" + str(run["assistant_turns"]),
                         flush=True,
                     )
 
@@ -330,30 +350,26 @@ def run_experiment(args):
         for depth in depths:
             for verification in verifications:
                 rows = [
-                    t for t in results
-                    if t["breadth"] == breadth
-                    and t["depth"] == depth
-                    and t["verification"] == verification
+                    t
+                    for t in results
+                    if t["breadth"] == breadth and t["depth"] == depth and t["verification"] == verification
                 ]
-                summaries.append({
-                    "breadth": breadth, "depth": depth,
-                    "verification": verification, "trials": len(rows),
-                    "accepted": sum(int(t["accepted"]) for t in rows),
-                    "accepted_pct": round(
-                        100 * sum(int(t["accepted"]) for t in rows) / len(rows), 2
-                    ),
-                    "runtime_mismatches": sum(
-                        int(not t["runtime_matches_request"]) for t in rows
-                    ),
-                    "mean_agent_seconds": round(
-                        sum(t["seconds"] for t in rows) / len(rows), 2
-                    ),
-                    "mean_agent_turns": round(
-                        sum(t["assistant_turns"] for t in rows) / len(rows), 2
-                    ),
-                })
+                summaries.append(
+                    {
+                        "breadth": breadth,
+                        "depth": depth,
+                        "verification": verification,
+                        "trials": len(rows),
+                        "accepted": sum(int(t["accepted"]) for t in rows),
+                        "accepted_pct": round(100 * sum(int(t["accepted"]) for t in rows) / len(rows), 2),
+                        "runtime_mismatches": sum(int(not t["runtime_matches_request"]) for t in rows),
+                        "mean_agent_seconds": round(sum(t["seconds"] for t in rows) / len(rows), 2),
+                        "mean_agent_turns": round(sum(t["assistant_turns"] for t in rows) / len(rows), 2),
+                    }
+                )
     summary = {
-        "run_id": root.name, "backend": "pi-local",
+        "run_id": root.name,
+        "backend": "pi-local",
         "is_real_agent_evidence": True,
         "limitations": metadata["experiment_limitations"],
         "summary": summaries,
@@ -370,11 +386,14 @@ def run_experiment(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--model", required=True,
+        "--model",
+        required=True,
         help="Exact Pi provider/model-id, e.g. openai-codex/gpt-5.6-sol",
     )
     parser.add_argument(
-        "--thinking", required=True, choices=THINKING_LEVELS,
+        "--thinking",
+        required=True,
+        choices=THINKING_LEVELS,
         help="Pi thinking level, pinned so Pi settings cannot change it",
     )
     parser.add_argument("--pi-binary", default="pi", help="Path to Pi CLI")
@@ -383,9 +402,7 @@ def main():
     parser.add_argument("--verifications", default="basic,rich")
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per trial")
-    parser.add_argument(
-        "--out", type=Path, default=Path("autonomy_lab/local-results")
-    )
+    parser.add_argument("--out", type=Path, default=Path("autonomy_lab/local-results"))
     args = parser.parse_args()
     try:
         run_experiment(args)

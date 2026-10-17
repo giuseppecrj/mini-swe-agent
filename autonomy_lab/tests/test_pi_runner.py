@@ -24,7 +24,7 @@ from autonomy_lab.runner import TASKS, build_prompt, prepare_workspace
 
 # Stands in for the Pi CLI: fixes merge_ids.py and reports the model and
 # thinking level named by FAKE_PI_MODEL / FAKE_PI_THINKING.
-FAKE_PI = '''
+FAKE_PI = """
 import json, os, pathlib, sys
 if "--version" in sys.argv:
     print("fake-pi 0")
@@ -41,7 +41,7 @@ for event in (
     {"type": "agent_settled", "aborted": False},
 ):
     print(json.dumps(event))
-'''
+"""
 
 
 class PiAdapterTests(unittest.TestCase):
@@ -100,20 +100,23 @@ class PiAdapterTests(unittest.TestCase):
             {"type": "turn_end"},
             {"type": "tool_execution_start", "toolCallId": "t1", "toolName": "bash"},
             {"type": "tool_execution_end", "toolCallId": "t1", "isError": False},
-            {"type": "message_end", "message": {
-                "role": "assistant", "provider": "openai", "model": "example",
-                "stopReason": "stop", "thinkingLevel": "high",
-                "usage": {"totalTokens": 210, "cost": {"total": 0.0123}}
-            }},
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "provider": "openai",
+                    "model": "example",
+                    "stopReason": "stop",
+                    "thinkingLevel": "high",
+                    "usage": {"totalTokens": 210, "cost": {"total": 0.0123}},
+                },
+            },
             {"type": "agent_end", "willRetry": False},
             {"type": "agent_settled", "aborted": False},
         ]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "events.jsonl"
-            path.write_text(
-                "\n".join(json.dumps(e) for e in events) + "\n",
-                encoding="utf-8"
-            )
+            path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
             metrics = parse_pi_events(path)
         self.assertTrue(metrics["settled"])
         self.assertFalse(metrics["aborted"])
@@ -128,10 +131,7 @@ class PiAdapterTests(unittest.TestCase):
     def test_detects_aborted_agent_even_with_events(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "events.jsonl"
-            path.write_text(
-                json.dumps({"type": "agent_settled", "aborted": True}) + "\n",
-                encoding="utf-8"
-            )
+            path.write_text(json.dumps({"type": "agent_settled", "aborted": True}) + "\n", encoding="utf-8")
             metrics = parse_pi_events(path)
             self.assertTrue(metrics["aborted"])
 
@@ -143,24 +143,24 @@ class PiAdapterTests(unittest.TestCase):
             (workspace / "prompt.txt").write_text(prompt, encoding="utf-8")
             checks = (workspace / "visible_checks.py").read_bytes()
             prompt_bytes = (workspace / "prompt.txt").read_bytes()
-            self.assertTrue(safe_trial_scope(
-                workspace, TASKS[:1], checks, prompt_bytes
-            ))
-            (workspace / "visible_checks.py").write_text(
-                "print('tampered')", encoding="utf-8"
-            )
-            self.assertFalse(safe_trial_scope(
-                workspace, TASKS[:1], checks, prompt_bytes
-            ))
+            self.assertTrue(safe_trial_scope(workspace, TASKS[:1], checks, prompt_bytes))
+            (workspace / "visible_checks.py").write_text("print('tampered')", encoding="utf-8")
+            self.assertFalse(safe_trial_scope(workspace, TASKS[:1], checks, prompt_bytes))
 
     def run_fake_trial(self, tmp, reported_model):
         fake = Path(tmp) / "fake-pi"
         fake.write_text("#!" + sys.executable + "\n" + FAKE_PI, encoding="utf-8")
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
         args = argparse.Namespace(
-            model="openai/example", thinking="high", pi_binary=str(fake),
-            breadths="1", depths="deep", verifications="rich",
-            repetitions=1, timeout=30, out=Path(tmp) / "out",
+            model="openai/example",
+            thinking="high",
+            pi_binary=str(fake),
+            breadths="1",
+            depths="deep",
+            verifications="rich",
+            repetitions=1,
+            timeout=30,
+            out=Path(tmp) / "out",
         )
         env = {"FAKE_PI_MODEL": reported_model, "FAKE_PI_THINKING": "high"}
         with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
