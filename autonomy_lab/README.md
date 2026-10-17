@@ -1,8 +1,25 @@
-# Autonomy Lab — cloud experiment v0.1
+# Autonomy Lab — cloud + local Pi experiment v0.2
 
 Test the hypothesis that deeper engineering specifications and richer *agent-visible* verification increase the reliable autonomous task horizon as breadth rises.
 
 This lab lives on an isolated branch of `giuseppecrj/mini-swe-agent`; it does not change upstream agent code. The GitHub Actions workflow provisions an **ephemeral GitHub-hosted Ubuntu runner** to execute the smoke suite. No paid VM or API key is required for the smoke run.
+
+## Local Pi / Herdr handoff (2026-10-17)
+
+**Start here:** [SESSION_HANDOFF.md](SESSION_HANDOFF.md), then [AGENTS.md](AGENTS.md) and [STATE.json](STATE.json). These files transfer the research context and verified workflow into the user's real local agent, without inventing access to the local machine.
+
+The branch now includes a **local Pi backend** (distinct from Docker mini-SWE-agent). It uses the user's own Pi model authentication, captures JSONL events and reports held-out acceptance. Start with one small authenticated trial from the repository root:
+
+    python3 -m unittest discover -s autonomy_lab/tests -v
+    python3 -m autonomy_lab.pi_runner --breadths 1 --depths deep --verifications rich --repetitions 1 --timeout 300
+
+Or open a persistent local Pi coordinator inside Herdr from the autonomy_lab directory:
+
+    pi @SESSION_HANDOFF.md "Continue the migrated Autonomy Lab session, run offline checks, then run one bounded real Pi trial and report observed results."
+
+**Be precise:** the cloud workflow used a mock agent for its eight treatment cells and built/starter-checked the Docker image; it did not measure real-model performance. The local Pi benchmark is executed with the user's host privileges, NOT a sandbox; use only the trusted built-in toy tasks. Local trajectories are ignored by git and must not be committed. A Pi CLI running on a local computer may still call a remote model provider.
+
+---
 
 ## Design
 
