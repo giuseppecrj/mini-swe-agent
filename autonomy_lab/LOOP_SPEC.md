@@ -74,7 +74,7 @@ Every consequential decision has exactly one held-out check, so each trial produ
 - **Same for every arm:** model, thinking level, Pi version, tool allowlist, isolation flags, confinement profile, 600 s timeout, starter code, frozen task bank (SHA-256 recorded) and runner commit.
 - **Balanced, randomized assignment (E1):** each task gets a multiple of 8 trials. Within a task, every decision receives each channel (`none`, `contract`, `check`, `both`) equally often, via seeded random permutations, and filler is `on` in exactly half of each decision's channel cells.
 - **Construction and P4 exposure:** for each task, the generator splits its trials into a filler-on half and a filler-off half. Within each half, it permutes each decision's channels so every channel appears equally often. That makes channel and filler balance hold by construction. A design is then accepted only if, for every decision, its `none` cells include sibling-check fractions both ≤ 0.4 and ≥ 0.6. The sibling-check fraction is the share of the other decisions in that trial assigned `check` or `both`. Designs are drawn in order from a recorded master seed until one qualifies. A simulation found such designs for 4 and 8 decisions, with acceptance rates of about 70% and 1% per draw, so up to 100,000 draws are allowed.
-- **Recording:** assignments and seeds are written to `trials.jsonl` before any trial runs.
+- **Recording:** the full design (assignments and seeds) is written to `design.json` in the run directory before any trial runs. `trials.jsonl` holds completed attempts only.
 - **Balanced arms (E2, E3):** E2 arms are balanced within task. E3 task subsets and orders are drawn from a seeded design that uses each task equally often at each breadth.
 - **Execution order:** all trials in a run are shuffled once with a recorded seed.
 - **No session state:** every trial starts from a fresh workspace, a fresh Pi process and a minimal agent directory. Provider prompt caching cannot be disabled and is recorded.
@@ -232,6 +232,19 @@ Each Pi process runs under `bwrap` with:
 - `PI_CODING_AGENT_DIR` pointing to a minimal agent directory holding only the files Pi needs to authenticate, chosen so OAuth token refresh still writes back correctly.
 
 The user's real `~/.pi/agent/sessions` is never mounted, because coordinator sessions contain the held-out checks. The agent can still read its own provider credentials. That is a known, accepted limitation for trusted tasks, as it is today.
+
+### 4.2a Grading isolation (added after the T1/T2 review)
+
+Grading runs agent-written code, so it gets its own confinement. Each held-out or visible check:
+
+- **Source:** only the designated module file is graded. It must be a regular file, not a symlink, and a package or other file with the same import name in the workspace is ignored. Task module names may not collide with harness files (`visible_checks`, `prompt`) or standard-library modules.
+- **Fresh state:** each check runs in its own fresh temporary directory containing only a copy of that module. It has its own bytecode cache, and no state is shared between checks.
+- **Sandbox:** each check runs inside a bubblewrap grading profile with no network, a read-only root, an empty `$HOME`, and nothing of the repository, sessions or results mounted. Its only writable location is its own temporary directory, which is deleted afterwards.
+- **Completion:** a check passes only if it exits 0 **and** prints a per-check random completion token after its last assertion. That defeats accidental `sys.exit`/`os._exit` during import. It is not proof against an adversarial agent.
+- **Time limit:** the 10 s timeout covers the whole process group, including cleanup.
+- **Integrity:** workspace spec files are hashed after the agent finishes and before grading. Grading never reads them from the workspace.
+
+**Bank integrity:** directory or file symlinks inside the bank are rejected, so the bank hash always covers exactly what is loaded.
 
 ### 4.3 Trial record schema (`trials.jsonl`, one JSON object per line)
 
