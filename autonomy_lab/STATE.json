@@ -50,7 +50,7 @@
         "artifact upload"
       ]
     },
-    "real_pi_trials_completed": 25,
+    "real_pi_trials_completed": 33,
     "published_performance_claims": false,
     "real_pi_runs": [
       {
@@ -152,18 +152,42 @@
   },
   "loop": {
     "gate": "G1 approved",
-    "current_stage": "harness T1-T5 (parallel worktrees) -> integration -> user label approval (blind) -> T8 -> G2",
+    "current_stage": "harness merged (T1-T5); T7 plumbing passed; awaiting final security review, user blind label approval + 3 user tasks, then T8 and G2",
     "budget_used": {
-      "benchmark_trials": 0,
-      "review_sessions": 0,
-      "aux_calls": 3,
-      "note": "counted from G1; 3 pre-G1 spec reviews not counted"
+      "benchmark_trials": 8,
+      "review_sessions": 10,
+      "aux_calls": 6,
+      "provider_reported_usd": {
+        "reviews_gpt_6_astra": 17.07,
+        "reviews_grok_4_7": 3.73,
+        "t7_benchmark": 0.54,
+        "total": 21.34
+      },
+      "unpriced": "claude-bridge/claude-opus-5-5 implementation writers: about 91.9M tokens, cost reported as $0",
+      "notes": [
+        "Review cost was budgeted at $5 and reached about $20.8; it was not tracked as it accrued (coordinator error).",
+        "Earlier status messages over-reported review sessions (14); the correct count is 10 since G1.",
+        "D2's budget omitted implementation-writer usage.",
+        "T7 measured $0.067 and about 15k tokens per trial, against the $0.042 pilot estimate; the remaining plan exceeds the $40 cap at this rate. Needs a G4 decision."
+      ]
     },
     "harness_branches": [
       "lab/t1-t2-grading-design",
       "lab/t3-confinement",
       "lab/t4-taskbank",
       "lab/t5-analysis"
-    ]
+    ],
+    "t7": {
+      "run": "run-20261017T162631Z-97ecc5 (local, outside repo)",
+      "commit": "52a39a8",
+      "trials": 8,
+      "infrastructure_failures": 0,
+      "runtime_mismatches": 0,
+      "integrity_failures": 0,
+      "confinement_signals": 0,
+      "reported_cost_usd": 0.5351,
+      "mean_seconds": 34.3,
+      "note": "Plumbing only. Per-decision results are withheld until the user's blind label approval."
+    }
   }
 }
