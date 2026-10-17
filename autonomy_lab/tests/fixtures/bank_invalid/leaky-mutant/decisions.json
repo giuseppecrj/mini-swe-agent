@@ -1,0 +1,30 @@
+[
+  {
+    "id": "lowercase",
+    "label": "inferable",
+    "contract": "slug(text) returns lowercase output, so slug('AbC') == 'abc'.",
+    "visible_check": "from lab_leaky import slug\nassert slug('XY') == 'xy'\n",
+    "heldout_check": "from lab_leaky import slug\nassert slug('AbC') == 'abc'\nassert slug('Q') == 'q'\n"
+  },
+  {
+    "id": "separator",
+    "label": "arbitrary",
+    "contract": "slug(text) replaces each space with a hyphen, so slug('a b') == 'a-b'.",
+    "visible_check": "from lab_leaky import slug\nassert slug('x y') == 'x-y'\n",
+    "heldout_check": "from lab_leaky import slug\nassert slug('a b c') == 'a-b-c'\n"
+  },
+  {
+    "id": "empty",
+    "label": "arbitrary",
+    "contract": "slug(text) raises ValueError when text is the empty string.",
+    "visible_check": "from lab_leaky import slug\ntry:\n    slug('')\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError('expected ValueError')\n",
+    "heldout_check": "from lab_leaky import slug\ntry:\n    slug('')\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError('expected ValueError')\n"
+  },
+  {
+    "id": "strip",
+    "label": "preserve",
+    "contract": "slug(text) ignores leading and trailing spaces, so slug('  a  ') == 'a'.",
+    "visible_check": "from lab_leaky import slug\nassert slug(' q ') == 'q'\n",
+    "heldout_check": "from lab_leaky import slug\nassert slug('  a  ') == 'a'\n"
+  }
+]

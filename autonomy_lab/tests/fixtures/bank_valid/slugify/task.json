@@ -1,0 +1,7 @@
+{
+  "id": "slugify",
+  "module": "lab_slugger.py",
+  "brief": "Fix slug(text) in lab_slugger.py so it turns a short title into a URL slug.",
+  "version": 1,
+  "author": "coordinator"
+}

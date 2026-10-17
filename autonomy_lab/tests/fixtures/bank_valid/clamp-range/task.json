@@ -1,0 +1,7 @@
+{
+  "id": "clamp-range",
+  "module": "lab_ranger.py",
+  "brief": "Fix clamp(x, lo, hi) in lab_ranger.py so it limits a number to a range.",
+  "version": 1,
+  "author": "user"
+}
