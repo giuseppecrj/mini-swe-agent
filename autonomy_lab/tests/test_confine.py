@@ -5,10 +5,14 @@ Tests that run bwrap skip when it is missing or cannot create unprivileged user 
 
 import json
 import os
+import shutil
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 import uuid
@@ -18,14 +22,24 @@ from unittest import mock
 from autonomy_lab import confine as confine_module
 from autonomy_lab.confine import (
     AGENT_DIR,
+    AUDIT_ARCH_X86_64,
+    SECCOMP_FD,
+    SECCOMP_RET_ALLOW,
+    SECCOMP_RET_ERRNO,
+    SECCOMP_RET_KILL_PROCESS,
     WORK_DIR,
     ConfinementError,
+    HostAuthError,
     bwrap_unavailable_reason,
     classify_path,
     confine,
+    normalise_path,
+    prepare_host_auth,
     run_selftest,
     sandbox_setup_failed,
     scan_confinement_signals,
+    seccomp_program,
+    shim_command,
 )
 
 LAB = Path(__file__).resolve().parents[1]
@@ -36,6 +50,14 @@ def fake_which(name, *args, **kwargs):
     if name == "bwrap":
         return "/usr/bin/bwrap"
     return sys.executable if name == "python-agent" else None
+
+
+def bwrap_argv(command):
+    """Strip the descriptor-closing exec shim, returning the bwrap command line it execs."""
+    for index, word in enumerate(command):
+        if word.endswith("bwrap"):
+            return command[index:]
+    raise AssertionError(f"no bwrap in {command}")
 
 
 def operands(command, flag):
@@ -75,13 +97,122 @@ class ProfileTests(unittest.TestCase):
 
     def test_workspace_is_the_only_writable_host_bind(self):
         command, _ = self.wrap(results_dirs=[str(self.run_root)])
-        binds = pairs(command, "--bind")
-        self.assertEqual(binds, [(str(self.auth), f"{AGENT_DIR}/auth.json"), (str(self.workspace), WORK_DIR)])
+        self.assertEqual(pairs(command, "--bind"), [(str(self.workspace), WORK_DIR)])
         self.assertEqual(operands(command, "--chdir"), [WORK_DIR])
         self.assertEqual(operands(command, "--remount-ro"), ["/"])
         for source, dest in pairs(command, "--ro-bind"):
-            if source != "/dev/null":
+            if source not in ("/dev/null", str(self.auth)):
                 self.assertEqual(source, dest)
+
+    def test_credentials_are_bound_read_only_so_a_refresh_inside_cannot_write_through(self):
+        command, _ = self.wrap()
+        self.assertIn((str(self.auth), f"{AGENT_DIR}/auth.json"), pairs(command, "--ro-bind"))
+        self.assertNotIn(str(self.auth), [source for source, _ in pairs(command, "--bind")])
+
+    def test_seccomp_filter_is_passed_to_bwrap_and_covers_unix_sockets_and_io_uring(self):
+        command, _ = self.wrap()
+        self.assertEqual(operands(bwrap_argv(command), "--seccomp"), [str(SECCOMP_FD)])
+        program = seccomp_program()
+        self.assertEqual(len(program) % 8, 0)
+        instructions = [struct.unpack("=HBBI", program[i : i + 8]) for i in range(0, len(program), 8)]
+        constants = [k for _, _, _, k in instructions]
+        self.assertIn(AUDIT_ARCH_X86_64, constants)  # the architecture is checked first
+        self.assertIn(0x40000000, constants)  # and the x32 ABI is rejected
+        for number in (41, 425, 426, 427):  # socket, io_uring_setup, io_uring_enter, io_uring_register
+            self.assertIn(number, constants)
+        actions = [k for code, _, _, k in instructions if code == 0x06]
+        self.assertIn(SECCOMP_RET_ERRNO | 1, actions)  # EPERM, not a kill, so the agent sees a normal error
+        self.assertIn(SECCOMP_RET_ALLOW, actions)
+        self.assertIn(SECCOMP_RET_KILL_PROCESS, actions)
+        # socket() is judged on its domain argument, read from args[0]; socketpair() is a different syscall.
+        self.assertEqual([k for code, _, _, k in instructions if code == 0x20], [4, 0, 16])
+
+    def test_seccomp_filter_refuses_architectures_it_was_not_assembled_for(self):
+        with mock.patch.object(confine_module.platform, "machine", return_value="aarch64"):
+            with self.assertRaises(ConfinementError):
+                seccomp_program()
+            with self.assertRaises(ConfinementError):
+                self.wrap()
+
+    def test_profile_is_launched_through_a_descriptor_closing_shim(self):
+        command, _ = self.wrap()
+        self.assertEqual(command[:3], [sys.executable, "-I", "-c"])
+        self.assertIn("os.closerange(3, limit)", command[3])
+        self.assertIn("os.execv", command[3])
+        self.assertEqual(command[4], str(SECCOMP_FD))
+        self.assertEqual(bytes.fromhex(command[5]), seccomp_program())
+        self.assertEqual(command[6], "/usr/bin/bwrap")
+
+    def test_binds_that_re_expose_a_protected_tree_are_rejected(self):
+        results = Path(self.tmp.name).resolve() / "results"
+        (results / "trial-logs").mkdir(parents=True)
+        installed = results / "pi-install"
+        installed.mkdir()
+        (installed / "pi").write_text("#!/bin/sh\n", encoding="utf-8")
+        # The reviewer's case: binding the executable's own directory back after hiding it re-exposed the results.
+        with mock.patch.object(confine_module.shutil, "which", return_value=str(installed / "pi")):
+            with self.assertRaises(ConfinementError) as caught:
+                self.wrap(results_dirs=[str(results)])
+        self.assertIn("overlaps the protected path", str(caught.exception))
+        # Equal to, inside, and containing a protected tree are all refused, as is the repository and $HOME.
+        for bad in (str(results), str(results / "trial-logs"), str(results.parent), str(Path.home()), str(LAB)):
+            with self.assertRaises(ConfinementError, msg=bad):
+                self.wrap(results_dirs=[str(results)], ro_binds=[bad])
+        # A bind inside hidden-but-unprotected $HOME, where the real Pi installation lives, is still re-exposed.
+        cache = Path.home() / ".cache" / "autonomy-lab"
+        cache.mkdir(parents=True, exist_ok=True)
+        allowed = Path(tempfile.mkdtemp(prefix="confine-test-bind-", dir=cache))
+        self.addCleanup(shutil.rmtree, allowed, True)
+        command, _ = self.wrap(results_dirs=[str(results)], ro_binds=[str(allowed)])
+        self.assertIn((str(allowed), str(allowed)), pairs(command, "--ro-bind"))
+
+    def test_credentials_and_agent_files_inside_a_protected_tree_are_rejected(self):
+        with self.assertRaises(ConfinementError) as caught:
+            self.wrap(results_dirs=[str(self.auth.parent)])
+        self.assertIn("credentials file", str(caught.exception))
+        # An agent file is judged by what it resolves to, so a symlink into the repository is refused too.
+        link = self.auth.parent / "linked.json"
+        link.symlink_to(LAB / "runner.py")
+        with self.assertRaises(ConfinementError) as caught:
+            self.wrap(extra_agent_files=["linked.json"])
+        self.assertIn("agent file", str(caught.exception))
+
+    def test_executables_and_binds_under_a_fresh_mount_are_rejected(self):
+        for directory in ("/tmp", "/run"):
+            with mock.patch.object(confine_module.shutil, "which", return_value=f"{directory}/pi-install/pi"):
+                with self.assertRaises(ConfinementError) as caught:
+                    self.wrap()
+            self.assertIn("ENOENT", str(caught.exception))
+            self.assertIn(directory, str(caught.exception))
+        with self.assertRaises(ConfinementError):
+            self.wrap(ro_binds=["/run/toolchain"])
+
+    def test_unreadable_git_metadata_raises_confinement_error(self):
+        root = Path(self.tmp.name).resolve() / "repo"
+        workspace = root / "ws"
+        workspace.mkdir(parents=True)
+        gitdir = root / "gitdir"
+        gitdir.mkdir()
+        (root / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+        (gitdir / "commondir").write_bytes(b"\xff\xfe/not-utf8\n")
+        with self.assertRaises(ConfinementError) as caught:
+            confine(["python-agent"], workspace, auth_file=self.auth)
+        self.assertIn("Git metadata", str(caught.exception))
+        # A worktree pointer that is not UTF-8 is the same class of failure, not a UnicodeDecodeError.
+        (gitdir / "commondir").write_text(str(gitdir), encoding="utf-8")
+        worktree = gitdir / "worktrees" / "wt"
+        worktree.mkdir(parents=True)
+        (worktree / "gitdir").write_bytes(b"\xff\xfe\n")
+        with self.assertRaises(ConfinementError):
+            confine(["python-agent"], workspace, auth_file=self.auth)
+        # So is metadata the harness cannot read at all.
+        shutil.rmtree(gitdir / "worktrees")
+        (gitdir / "commondir").chmod(0o000)
+        self.addCleanup((gitdir / "commondir").chmod, 0o644)
+        if os.access(gitdir / "commondir", os.R_OK):
+            self.skipTest("running as root: unreadable metadata cannot be simulated")
+        with self.assertRaises(ConfinementError):
+            confine(["python-agent"], workspace, auth_file=self.auth)
 
     def test_home_repository_results_and_run_are_hidden(self):
         command, _ = self.wrap(results_dirs=[str(self.run_root)])
@@ -119,8 +250,9 @@ class ProfileTests(unittest.TestCase):
         sources = [src for src, _ in pairs(command, "--ro-bind") + pairs(command, "--bind")]
         self.assertFalse([s for s in sources if "sessions" in s or s.startswith(str(Path.home() / ".pi"))])
         self.assertEqual(
-            [d for _, d in pairs(command, "--bind") if d.startswith(AGENT_DIR)], [f"{AGENT_DIR}/auth.json"]
+            [d for _, d in pairs(command, "--ro-bind") if d.startswith(AGENT_DIR)], [f"{AGENT_DIR}/auth.json"]
         )
+        self.assertEqual([d for _, d in pairs(command, "--bind") if d.startswith(AGENT_DIR)], [])
 
     def test_extra_agent_files_are_read_only(self):
         command, _ = self.wrap(extra_agent_files=["models.json"])
@@ -155,15 +287,103 @@ class ProfileTests(unittest.TestCase):
             self.wrap(results_dirs=["/usr"])
         with self.assertRaises(ConfinementError):
             self.wrap(results_dirs=[str(self.workspace)])
+        for shared in ("/tmp", "/var/tmp", "/run"):
+            with self.assertRaises(ConfinementError, msg=shared):
+                self.wrap(results_dirs=[shared])
         with mock.patch.object(confine_module.shutil, "which", return_value=None):
             with self.assertRaises(ConfinementError):
                 self.wrap()
 
     def test_sandbox_setup_failure_is_recognised_from_stderr(self):
         self.assertTrue(sandbox_setup_failed(1, "bwrap: setting up uid map: Permission denied\n"))
+        self.assertTrue(sandbox_setup_failed(125, "confine-shim: OSError: too many open files\n"))
         self.assertFalse(sandbox_setup_failed(0, "bwrap: warning\n"))
         self.assertFalse(sandbox_setup_failed(1, "Error: model not found\n"))
         self.assertFalse(sandbox_setup_failed(None, ""))
+
+    def test_a_shim_failure_is_reported_as_a_profile_failure(self):
+        # The shim never silently execs without its descriptor work: a broken invocation is a sandbox failure.
+        command = shim_command(["/bin/true"], seccomp_program())
+        command[4] = "not-a-descriptor"
+        done = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 125)
+        self.assertTrue(done.stderr.startswith("confine-shim: ValueError"), done.stderr)
+        self.assertTrue(sandbox_setup_failed(done.returncode, done.stderr))
+
+
+class HostAuthTests(unittest.TestCase):
+    """prepare_host_auth keeps the host token valid for a whole trial without ever capturing it."""
+
+    TOKEN = "ya29.FAKE-BEARER-TOKEN-VALUE"
+
+    def fake_pi(self, exit_code=0, stderr=""):
+        """Write a stand-in ``pi`` that records how it was called and prints a token to stdout."""
+        directory = Path(tempfile.mkdtemp(prefix="confine-fake-pi-"))
+        self.addCleanup(shutil.rmtree, directory, True)
+        record = directory / "call.json"
+        script = directory / "pi"
+        script.write_text(
+            textwrap.dedent(f"""\
+                #!{sys.executable}
+                import json, os, sys
+                try:
+                    stdout = os.readlink("/proc/self/fd/1")
+                except OSError:
+                    stdout = "?"
+                with open({str(record)!r}, "w", encoding="utf-8") as handle:
+                    json.dump({{"argv": sys.argv[1:], "stdout": stdout}}, handle)
+                print({self.TOKEN!r})
+                sys.stderr.write({stderr!r})
+                sys.exit({exit_code})
+                """),
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return script, record
+
+    def test_refreshes_the_host_token_without_capturing_it(self):
+        script, record = self.fake_pi()
+        duration = prepare_host_auth("openai-codex", "gpt-5.6-sol", 900, pi_binary=str(script))
+        self.assertEqual(duration, "15m")
+        call = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual(
+            call["argv"],
+            [
+                "auth",
+                "print-bearer-token",
+                "--provider",
+                "openai-codex",
+                "--model",
+                "gpt-5.6-sol",
+                "--min-expiry",
+                "15m",
+            ],
+        )
+        # The token is printed to stdout, and stdout is /dev/null: it is never captured, logged or returned.
+        self.assertEqual(call["stdout"], "/dev/null")
+        self.assertNotIn(self.TOKEN, duration)
+
+    def test_duration_uses_the_units_the_cli_accepts(self):
+        script, record = self.fake_pi()
+        for seconds, expected in ((3600, "1h"), (7200, "2h"), (900, "15m"), (60, "1m"), (90, "90s"), (1, "1s")):
+            self.assertEqual(prepare_host_auth("p", "m", seconds, pi_binary=str(script)), expected)
+            self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["argv"][-1], expected)
+        for bad in (0, -60, 1.5, "15m"):
+            with self.assertRaises(HostAuthError, msg=bad):
+                prepare_host_auth("p", "m", bad, pi_binary=str(script))
+
+    def test_failure_raises_host_auth_error_with_a_short_non_secret_message(self):
+        script, _ = self.fake_pi(exit_code=1, stderr="warming up\nError: no OAuth credentials for openai-codex\n")
+        with self.assertRaises(HostAuthError) as caught:
+            prepare_host_auth("openai-codex", "gpt-5.6-sol", 900, pi_binary=str(script))
+        message = str(caught.exception)
+        self.assertIn("no OAuth credentials for openai-codex", message)
+        self.assertNotIn(self.TOKEN, message)
+        self.assertLess(len(message), 300)
+
+    def test_a_missing_pi_binary_is_an_auth_failure_not_a_crash(self):
+        with self.assertRaises(HostAuthError):
+            prepare_host_auth("p", "m", 900, pi_binary=str(Path(tempfile.gettempdir()) / "no-such-pi-binary"))
 
 
 @unittest.skipIf(BWRAP_REASON, f"bwrap unavailable: {BWRAP_REASON}")
@@ -181,7 +401,15 @@ class BwrapTests(unittest.TestCase):
             "python_list_sessions",
             "shell_list_sessions",
             "workspace_read_write",
-            "auth_written_back_on_host",
+            "create_unix_socket",
+            "connect_host_abstract_socket",
+            "io_uring_setup",
+            "auth_refresh",
+            "clean_fd_table",
+            "outbound_tcp",
+            "socketpair_works",
+            "pipe_works",
+            "auth_unchanged_on_host",
         ):
             self.assertIn(name, report["checks"])
 
@@ -198,8 +426,191 @@ class BwrapTests(unittest.TestCase):
             "shell_absolute_runner",
             "shell_cd_parent_runner",
             "workspace_read_write",
+            "create_unix_socket",
+            "connect_host_abstract_socket",
         ):
             self.assertTrue(report["checks"][name], name)
+
+    def fixture(self, auth_text="{}"):
+        """A workspace and a credentials file outside every protected tree, plus a directory the profile hides."""
+        root = Path(tempfile.mkdtemp(prefix="confine-fixture-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        workspace = root / "workspaces" / "trial"
+        workspace.mkdir(parents=True)
+        # The agent directory sits outside the run root, as the real ~/.pi/agent does: confine() refuses to bind a
+        # credentials file out of a protected tree.
+        agent = Path(tempfile.mkdtemp(prefix="confine-agent-"))
+        self.addCleanup(shutil.rmtree, agent, True)
+        auth = agent / "auth.json"
+        auth.write_text(auth_text, encoding="utf-8")
+        return root, workspace, auth
+
+    def probe(self, script, workspace, auth, pass_fds=(), **kwargs):
+        """Run a probe script under the profile and return its JSON report."""
+        command, env = confine(
+            [sys.executable, "-I", "-c", script],
+            workspace,
+            auth_file=auth,
+            ro_binds=[sys.base_prefix],
+            **kwargs,
+        )
+        done = subprocess.run(
+            command, env=env, capture_output=True, text=True, timeout=120, pass_fds=pass_fds, stdin=subprocess.DEVNULL
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout.strip().splitlines()[-1]), done
+
+    LEAK_PROBE = textwrap.dedent("""
+        import json, os
+        targets = {}
+        for name in os.listdir("/proc/self/fd"):
+            try:
+                targets[name] = os.readlink("/proc/self/fd/" + name)
+            except OSError:
+                continue
+        report = {"fds": sorted(n for n, t in targets.items() if not t.endswith("/fd")), "targets": targets}
+        try:
+            os.lseek(LEAKED, 0, 0)
+            report["through_fd"] = os.read(LEAKED, 64).decode("utf-8", "replace")
+        except OSError as exc:
+            report["through_fd"] = "error: " + str(exc)
+        try:
+            with open(HIDDEN, encoding="utf-8") as handle:
+                report["by_path"] = handle.read()
+        except OSError as exc:
+            report["by_path"] = "error: " + str(exc)
+        print(json.dumps(report))
+        """)
+
+    def leak_setup(self):
+        root, workspace, auth = self.fixture()
+        hidden = root / "held-out"
+        hidden.mkdir()
+        secret = hidden / "grader.py"
+        secret.write_text("HELD-OUT-GRADER-CODE", encoding="utf-8")
+        # A high descriptor number, so it cannot collide with the seccomp descriptor and look closed by accident.
+        raw = os.open(secret, os.O_RDONLY)
+        leaked = 21
+        os.dup2(raw, leaked)
+        os.close(raw)
+        os.set_inheritable(leaked, True)
+        self.addCleanup(os.close, leaked)
+        script = self.LEAK_PROBE.replace("LEAKED", str(leaked)).replace("HIDDEN", repr(str(secret)))
+        return root, workspace, auth, script, leaked
+
+    def test_inherited_descriptors_cannot_bypass_the_hidden_mounts(self):
+        root, workspace, auth, script, leaked = self.leak_setup()
+        report, _ = self.probe(script, workspace, auth, results_dirs=[str(root)], pass_fds=(leaked,))
+        # The caller leaked a descriptor to a hidden file; the shim closed it before bwrap ever started.
+        self.assertEqual(report["fds"], ["0", "1", "2"])
+        self.assertTrue(report["through_fd"].startswith("error: "), report["through_fd"])
+        self.assertNotIn("HELD-OUT-GRADER-CODE", report["through_fd"])
+        self.assertNotIn("HELD-OUT-GRADER-CODE", report["by_path"])
+        # The seccomp program is handed over through a pipe, which must not be visible either.
+        inherited = {n: t for n, t in report["targets"].items() if n not in ("0", "1", "2")}
+        self.assertFalse([t for t in inherited.values() if t.startswith("pipe:")], report["targets"])
+
+    def test_the_descriptor_probe_would_notice_a_missing_shim(self):
+        root, workspace, auth, script, leaked = self.leak_setup()
+        command, env = confine(
+            [sys.executable, "-I", "-c", script], workspace, auth_file=auth, ro_binds=[sys.base_prefix]
+        )
+        # Drop the shim (and the seccomp descriptor it feeds) to launch bwrap the way the reviewer did.
+        bare = bwrap_argv(command)
+        index = bare.index("--seccomp")
+        del bare[index : index + 2]
+        done = subprocess.run(
+            bare, env=env, capture_output=True, text=True, timeout=120, pass_fds=(leaked,), stdin=subprocess.DEVNULL
+        )
+        report = json.loads(done.stdout.strip().splitlines()[-1])
+        self.assertIn(str(leaked), report["fds"])
+        self.assertEqual(report["through_fd"], "HELD-OUT-GRADER-CODE")
+        self.assertTrue(report["by_path"].startswith("error: "), report["by_path"])
+
+    def test_host_abstract_sockets_are_unreachable_while_pipes_and_tcp_still_work(self):
+        root, workspace, auth = self.fixture()
+        name = "confine-test-" + uuid.uuid4().hex
+        abstract = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        abstract.bind(b"\x00" + name.encode())
+        abstract.listen(2)
+        self.addCleanup(abstract.close)
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.bind(("127.0.0.1", 0))
+        tcp.listen(2)
+        self.addCleanup(tcp.close)
+        script = textwrap.dedent(f"""
+            import json, os, socket, subprocess
+            report = {{}}
+            def probe(name, call):
+                try:
+                    call()
+                    report[name] = "ok"
+                except Exception as exc:
+                    report[name] = type(exc).__name__ + ": " + str(exc)[:80]
+            def connect_abstract():
+                handle = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    handle.connect(b"\\x00" + {name!r}.encode())
+                finally:
+                    handle.close()
+            def tcp_out():
+                with socket.create_connection(("127.0.0.1", {tcp.getsockname()[1]}), timeout=10) as handle:
+                    handle.send(b"ping")
+            def pair():
+                left, right = socket.socketpair()
+                left.send(b"x")
+                assert right.recv(1) == b"x"
+            def pipe():
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"x")
+                assert os.read(read_fd, 1) == b"x"
+            probe("unix_socket", lambda: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
+            probe("connect_host_abstract", connect_abstract)
+            probe("datagram_unix_socket", lambda: socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM))
+            probe("socketpair", pair)
+            probe("pipe", pipe)
+            probe("tcp", tcp_out)
+            probe("bash", lambda: subprocess.run(["bash", "-c", "echo hi"], capture_output=True, check=True))
+            probe("python", lambda: subprocess.run(["python3", "-I", "-c", "print(1)"], capture_output=True,
+                                                   check=True))
+            print(json.dumps(report))
+            """)
+        report, _ = self.probe(script, workspace, auth, results_dirs=[str(root)])
+        for denied in ("unix_socket", "connect_host_abstract", "datagram_unix_socket"):
+            self.assertIn("PermissionError", report[denied], f"{denied}: {report[denied]}")
+        for allowed in ("socketpair", "pipe", "tcp", "bash", "python"):
+            self.assertEqual(report[allowed], "ok", allowed)
+
+    def test_a_refresh_inside_the_sandbox_fails_and_never_touches_the_host_file(self):
+        original = '{"host": "original"}'
+        root, workspace, auth = self.fixture(auth_text=original)
+        script = textwrap.dedent(f"""
+            import json, os
+            report = {{}}
+            def probe(name, call):
+                try:
+                    call()
+                    report[name] = "ok"
+                except Exception as exc:
+                    report[name] = type(exc).__name__ + ": " + str(exc)[:80]
+            def read_auth():
+                with open("{AGENT_DIR}/auth.json", encoding="utf-8") as handle:
+                    assert json.load(handle) == {{"host": "original"}}
+            def refresh():
+                # What Pi does: take the lock directory beside auth.json, then rewrite the file in place.
+                os.mkdir("{AGENT_DIR}/auth.json.lock")
+                with open("{AGENT_DIR}/auth.json", "w", encoding="utf-8") as handle:
+                    handle.write('{{"rewritten": true}}')
+            probe("read_auth", read_auth)
+            probe("refresh", refresh)
+            print(json.dumps(report))
+            """)
+        report, _ = self.probe(script, workspace, auth, results_dirs=[str(root)])
+        # The agent may read its own credentials, but a refresh fails cleanly: the runner calls prepare_host_auth.
+        self.assertEqual(report["read_auth"], "ok")
+        self.assertIn("Error", report["refresh"])
+        self.assertIn("read-only", report["refresh"].lower())
+        self.assertEqual(auth.read_text(encoding="utf-8"), original)
 
     def test_killing_the_process_group_stops_the_confined_process(self):
         workspace = Path(tempfile.mkdtemp())
@@ -306,11 +717,85 @@ class SignalScanTests(unittest.TestCase):
             start("5", "bash", command="touch /work/ok"),
             end("5", "bash", "touch: cannot touch 'ok': Permission denied", True),
         ]
-        denied = [s["detail"] for s in scan_confinement_signals(events) if s["kind"] == "denied_path"]
-        self.assertEqual(
-            denied,
-            ["bash: /home/g/.pi/agent/sessions", "bash: ../x/runner.py", "bash: .."],
+        signals = scan_confinement_signals(events)
+        denied = [s["detail"] for s in signals if s["kind"] == "denied_path"]
+        self.assertEqual(denied, ["bash: /home/g/.pi/agent/sessions", "bash: ../x/runner.py", "bash: .."])
+        # The write to /etc/x was refused by the profile; /etc is on the argument allowlist, the denial is not.
+        self.assertIn({"kind": "denied_operation", "detail": "write: read-only file system: /etc/x"}, signals)
+        # No path in the message and none in the arguments: the message itself is the detail.
+        self.assertIn(
+            {
+                "kind": "denied_operation",
+                "detail": "bash: permission denied: touch: cannot touch 'ok': Permission denied",
+            },
+            signals,
         )
+
+    def test_denied_operation_is_a_signal_even_when_the_path_is_on_the_system_allowlist(self):
+        # The reviewer's case: a confined `touch /etc/x` yielded no signal at all, because /etc is allowlisted.
+        events = [
+            start("1", "bash", command="touch /etc/x"),
+            end("1", "bash", "touch: cannot touch '/etc/x': Read-only file system", True),
+            start("2", "bash", command="mkdir /opt/pkg"),
+            end("2", "bash", "mkdir: cannot create directory '/opt/pkg': Permission denied", True),
+            start("3", "bash", command="mount -o remount,rw /"),
+            end("3", "bash", "mount: /: mount point not mounted or bad option. Operation not permitted", True),
+        ]
+        signals = scan_confinement_signals(events)
+        self.assertEqual({s["kind"] for s in signals}, {"denied_operation", "absolute_path"})
+        details = [s["detail"] for s in signals if s["kind"] == "denied_operation"]
+        self.assertEqual(
+            details,
+            [
+                "bash: read-only file system: /etc/x",
+                "bash: permission denied: /opt/pkg",
+                "bash: operation not permitted: /",
+            ],
+        )
+
+    def test_doubled_leading_slash_and_dot_segments_are_recognised(self):
+        # The reviewer's case: `//home/...` was treated as a non-path and dropped.
+        events = [
+            start("1", "bash", command="cat //home/g/Projects/mini-swe-agent/autonomy_lab/runner.py"),
+            start("2", "read", path="///home/g/.pi/agent/sessions/x.jsonl"),
+            start("3", "read", path="/home/./g/notes.txt"),
+            start("4", "bash", command="cat /work/./sub/../ledger.py; curl https://example.com/a/b"),
+        ]
+        signals = scan_confinement_signals(events)
+        self.assertEqual({s["kind"] for s in signals}, {"absolute_path"})
+        details = [s["detail"] for s in signals]
+        self.assertIn("bash: //home/g/Projects/mini-swe-agent/autonomy_lab/runner.py", details)
+        self.assertIn("read: ///home/g/.pi/agent/sessions/x.jsonl", details)
+        self.assertIn("read: /home/./g/notes.txt", details)
+        self.assertEqual(len(signals), 3)
+
+    def test_normalise_path(self):
+        cases = {
+            "//home/g": "/home/g",
+            "///home/g": "/home/g",
+            "/home/./g": "/home/g",
+            "/work/sub/../ledger.py": "/work/ledger.py",
+            "//work/./x/..": "/work",
+            "../x": "../x",
+            "": "",
+        }
+        for word, expected in cases.items():
+            self.assertEqual(normalise_path(word), expected, word)
+
+    def test_malformed_events_are_reported_instead_of_crashing_the_scan(self):
+        events = [
+            {"type": "tool_execution_start", "toolCallId": [], "toolName": "bash", "args": {"command": "ls .."}},
+            {"type": "tool_execution_end", "toolCallId": {}, "toolName": "bash", "result": "No such file"},
+            {"type": "tool_execution_start", "toolCallId": "2", "toolName": 7, "args": {"path": "../runner.py"}},
+            start("3", "read", path="~/secret"),
+        ]
+        signals = scan_confinement_signals(events)
+        kinds = [s["kind"] for s in signals]
+        self.assertEqual(kinds.count("malformed_event"), 2)
+        self.assertTrue(any("TypeError" in s["detail"] for s in signals if s["kind"] == "malformed_event"))
+        # Scanning continues: the well-formed events after the malformed ones are still classified.
+        self.assertIn({"kind": "parent_relative_path", "detail": "?: ../runner.py"}, signals)
+        self.assertIn({"kind": "home_path", "detail": "read: ~/secret"}, signals)
 
     def test_workspace_and_system_paths_are_not_signals(self):
         events = [
@@ -345,6 +830,7 @@ class SignalScanTests(unittest.TestCase):
             "/work/../home": "parent_relative_path",
             "/home/g": "absolute_path",
             "/": None,
+            "//": None,
             "/usr/bin/python3": None,
             "/work": None,
             "/workspace": "absolute_path",
@@ -352,7 +838,14 @@ class SignalScanTests(unittest.TestCase):
             "$HOME/x": "home_path",
             "x.py": None,
             "...": None,
-            "//comment": None,
+            "//home/g": "absolute_path",
+            "///home/g": "absolute_path",
+            "/home/./g": "absolute_path",
+            "//work/x": None,
+            "//usr/bin/python3": None,
+            # A URL authority, left behind when the scheme is split off at the colon.
+            "//example.com/a/b": None,
+            "//registry.npmjs.org:443/x": None,
         }
         for word, kind in cases.items():
             self.assertEqual(classify_path(word), kind, word)

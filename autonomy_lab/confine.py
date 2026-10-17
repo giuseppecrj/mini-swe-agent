@@ -10,16 +10,25 @@ complete environment to start it with. Inside the profile:
   it holds daemon sockets (Docker, Tailscale, user agents) that would bypass the profile; only files that ``/etc``
   symlinks resolve into, such as the resolver's ``resolv.conf``, are bound back read-only;
 - the trial workspace is bound read-write at ``/work``, which is also the working directory;
-- the directory of the wrapped executable (the Pi installation) is bound read-only at its host path;
-- ``PI_CODING_AGENT_DIR`` is ``/pi-agent``, a private tmpfs that holds only the real ``auth.json``, bound read-write;
+- the directory of the wrapped executable (the Pi installation) is bound read-only at its host path. That bind, and
+  every caller-supplied one, is refused when it equals, contains or lies inside a protected tree (the repository and
+  its worktrees, ``$HOME/.pi/agent/sessions``, the run root, the results directories, other workspaces), so an
+  installation path cannot re-expose held-out code or another trial's data;
+- ``PI_CODING_AGENT_DIR`` is ``/pi-agent``, a private tmpfs that holds only the real ``auth.json``, bound READ-ONLY;
 - PID, IPC, UTS, cgroup and user namespaces are new, nested user namespaces are disabled, ``/proc`` and ``/dev`` are
   fresh, the environment is cleared to a minimal allowlist, and the network is shared because the model provider needs
-  it.
+  it;
+- a classic-BPF seccomp filter (x86_64 only) returns ``EPERM`` for ``socket()`` with ``AF_UNIX`` and for the
+  ``io_uring`` syscalls: the shared network namespace would otherwise let the agent reach host *abstract* Unix
+  sockets (user daemons and agents), which no mount can hide. ``pipe``, ``socketpair`` and TCP keep working;
+- the profile is launched through a short ``python3 -I -c`` exec shim that closes every inherited descriptor except
+  stdin, stdout, stderr and the seccomp program, so a caller that leaks a descriptor to a hidden file (``pass_fds``,
+  ``close_fds=False``, an inherited log file) cannot punch a hole through the mount profile.
 
-Pi rewrites ``auth.json`` in place (``writeFileSync`` under a ``proper-lockfile`` lock directory beside it), so a
-single-file bind keeps OAuth refresh write-back working. The lock directory lands in the private tmpfs, so a refresh
-inside the profile is not serialised against Pi processes on the host. Trials run with concurrency 1; the harness
-should avoid refreshing the same provider on the host while a trial runs.
+OAuth refresh is a HOST responsibility. ``auth.json`` is read-only inside the profile, so a refresh attempted by the
+confined process fails cleanly (the runner classifies it as an ``auth`` infrastructure failure) and can neither
+corrupt the host file nor race a host Pi process over its lock directory. The runner calls :func:`prepare_host_auth`
+before each trial to make the host token valid for at least the trial's duration.
 
 This is confinement for trusted first-party tasks, not a hardened sandbox: the agent can read its own provider
 credentials and the rest of the read-only host filesystem.
@@ -28,10 +37,13 @@ credentials and the rest of the read-only host filesystem.
 import argparse
 import json
 import os
+import platform
 import posixpath
 import re
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -58,10 +70,128 @@ SPECIAL_ROOT_ENTRIES = {"proc", "dev", "tmp", "run"}
 FRESH_MOUNTS = ("/tmp", "/run")
 # Paths that can never be hidden without breaking the profile.
 UNHIDEABLE = {"/", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/proc", "/dev", "/sys", "/run", "/var"}
+# Shared directories that cannot be protected as a unit: every process keeps temporary files there, so a workspace
+# created under one must not turn the whole mount into a protected tree. Subtrees of them still can be.
+SHARED_ROOTS = frozenset({*UNHIDEABLE, *FRESH_MOUNTS, "/var/tmp"})
+# Filesystem and metadata failures that mean "the profile cannot be built", not "the harness has a bug".
+SETUP_ERRORS = (OSError, UnicodeDecodeError, ValueError)
 
 
 class ConfinementError(RuntimeError):
     """The confinement profile could not be set up; the trial is a "sandbox" infrastructure failure."""
+
+
+class HostAuthError(RuntimeError):
+    """The host token could not be prepared for a trial; the trial is an "auth" infrastructure failure."""
+
+
+# --- seccomp filter: host abstract Unix sockets survive the shared network namespace ---------------------------
+
+# struct seccomp_data { int nr; __u32 arch; __u64 instruction_pointer; __u64 args[6]; }
+SECCOMP_DATA_NR = 0
+SECCOMP_DATA_ARCH = 4
+SECCOMP_DATA_ARG0 = 16  # low 32 bits of args[0] on a little-endian machine
+AUDIT_ARCH_X86_64 = 0xC000003E
+X32_SYSCALL_BIT = 0x40000000
+SECCOMP_RET_KILL_PROCESS = 0x80000000
+SECCOMP_RET_ERRNO = 0x00050000
+SECCOMP_RET_ALLOW = 0x7FFF0000
+EPERM = 1
+AF_UNIX = 1
+# x86_64 syscall numbers. io_uring can create and use sockets without ever calling socket().
+NR_SOCKET = 41
+NR_IO_URING = (425, 426, 427)  # io_uring_setup, io_uring_enter, io_uring_register
+# Classic BPF: load a word at an absolute offset, compare, test bits, return an action.
+BPF_LD_W_ABS = 0x20
+BPF_JEQ_K = 0x15
+BPF_JSET_K = 0x45
+BPF_RET_K = 0x06
+# The descriptor the exec shim hands to bwrap's --seccomp.
+SECCOMP_FD = 3
+
+
+def seccomp_program():
+    """Assemble the profile's classic-BPF seccomp program as a ``struct sock_filter`` array for ``--seccomp``.
+
+    Kills anything that is not the x86_64 ABI (including x32, which renumbers syscalls), returns ``EPERM`` for
+    ``socket()`` with ``AF_UNIX`` and for the ``io_uring`` syscalls, and allows everything else. ``socketpair()`` and
+    ``pipe()`` are different syscalls and keep working.
+    """
+    machine = platform.machine()
+    if machine != "x86_64":
+        raise ConfinementError(f"the seccomp filter is assembled for x86_64 only, not {machine}")
+    code = []
+    labels = {}
+
+    def emit(op, k=0, jt="next", jf="next"):
+        code.append((op, k, jt, jf))
+
+    emit(BPF_LD_W_ABS, SECCOMP_DATA_ARCH)
+    emit(BPF_JEQ_K, AUDIT_ARCH_X86_64, jf="kill")  # another architecture would renumber every syscall below
+    emit(BPF_LD_W_ABS, SECCOMP_DATA_NR)
+    emit(BPF_JSET_K, X32_SYSCALL_BIT, jt="kill")
+    emit(BPF_JEQ_K, NR_SOCKET, jt="unix_domain")
+    for number in NR_IO_URING:
+        emit(BPF_JEQ_K, number, jt="deny")
+    emit(BPF_RET_K, SECCOMP_RET_ALLOW)
+    labels["unix_domain"] = len(code)
+    emit(BPF_LD_W_ABS, SECCOMP_DATA_ARG0)
+    emit(BPF_JEQ_K, AF_UNIX, jt="deny", jf="allow")
+    labels["deny"] = len(code)
+    emit(BPF_RET_K, SECCOMP_RET_ERRNO | EPERM)
+    labels["allow"] = len(code)
+    emit(BPF_RET_K, SECCOMP_RET_ALLOW)
+    labels["kill"] = len(code)
+    emit(BPF_RET_K, SECCOMP_RET_KILL_PROCESS)
+    program = b""
+    for index, (op, k, jt, jf) in enumerate(code):
+        jumps = []
+        for target in (jt, jf):
+            destination = index + 1 if target == "next" else labels[target]
+            offset = destination - index - 1
+            if not 0 <= offset <= 255:
+                raise ConfinementError(f"seccomp jump to {target} is out of range")
+            jumps.append(offset)
+        program += struct.pack("=HBBI", op, jumps[0], jumps[1], k)
+    return program
+
+
+# --- exec shim: inherited descriptors bypass the hidden mounts --------------------------------------------------
+
+# Runs on the host in place of bwrap, whatever the caller's Popen flags are. It closes every descriptor the caller
+# leaked, feeds the seccomp program to bwrap through a pipe (no temporary file, nothing on disk), and execs bwrap.
+# bwrap reads the program during setup and does not pass it on, so the confined process keeps only 0, 1 and 2.
+SHIM_PREFIX = "confine-shim: "
+EXEC_SHIM = "\n".join(
+    (
+        "import os, sys",
+        "try:",
+        "    seccomp_fd = int(sys.argv[1])",
+        "    program = bytes.fromhex(sys.argv[2])",
+        "    try:",
+        "        limit = max(1 << 16, os.sysconf('SC_OPEN_MAX'))",
+        "    except (OSError, ValueError):",
+        "        limit = 1 << 16",
+        "    os.closerange(3, limit)",
+        "    read_fd, write_fd = os.pipe()",
+        "    os.write(write_fd, program)",
+        "    os.close(write_fd)",
+        "    if read_fd != seccomp_fd:",
+        "        os.dup2(read_fd, seccomp_fd)",
+        "        os.close(read_fd)",
+        "    os.set_inheritable(seccomp_fd, True)",
+        "    os.execv(sys.argv[3], sys.argv[3:])",
+        "except BaseException as exc:",
+        # Report like bwrap does, so sandbox_setup_failed() classifies this as a profile failure, not a model failure.
+        "    sys.stderr.write({prefix!r} + type(exc).__name__ + ': ' + str(exc)[:200] + chr(10))",
+        "    os._exit(125)",
+    )
+).format(prefix=SHIM_PREFIX)
+
+
+def shim_command(bwrap_command, program):
+    """Prepend the descriptor-closing exec shim to a bwrap command line."""
+    return [sys.executable, "-I", "-c", EXEC_SHIM, str(SECCOMP_FD), program.hex(), *bwrap_command]
 
 
 def default_auth_file():
@@ -94,10 +224,10 @@ def bwrap_unavailable_reason():
 
 
 def sandbox_setup_failed(exit_code, stderr_text):
-    """True when a wrapped process failed because bwrap itself could not set up the profile."""
+    """True when a wrapped process failed because the profile itself could not be set up (bwrap or the exec shim)."""
     if exit_code in (0, None):
         return False
-    return any(line.startswith("bwrap: ") for line in (stderr_text or "").splitlines())
+    return any(line.startswith(("bwrap: ", SHIM_PREFIX)) for line in (stderr_text or "").splitlines())
 
 
 def _is_within(path, parent):
@@ -105,7 +235,18 @@ def _is_within(path, parent):
 
 
 def _git_paths(start):
-    """Return every checkout and Git directory of the repository containing ``start``, without running git."""
+    """Return every checkout and Git directory of the repository containing ``start``, without running git.
+
+    Unreadable, corrupt or non-UTF-8 Git metadata is a profile setup failure, not a crash: a worktree whose
+    ``gitdir`` or ``commondir`` cannot be decoded would otherwise escape as ``UnicodeDecodeError``.
+    """
+    try:
+        return _git_paths_unchecked(start)
+    except SETUP_ERRORS as exc:
+        raise ConfinementError(f"cannot read the Git metadata around {start}: {exc!r}") from exc
+
+
+def _git_paths_unchecked(start):
     paths = set()
     for directory in [start, *start.parents]:
         marker = directory / ".git"
@@ -153,12 +294,20 @@ def _run_file_binds():
     return binds
 
 
-def _hidden_paths(workspace, results_dirs):
-    home = Path.home().resolve()
-    # /tmp is always a fresh tmpfs; see confine().
-    candidates = {
-        home,
-        Path("/var/tmp"),
+def _protected_trees(workspace, results_dirs):
+    """Return the trees that must never be readable inside the profile, as resolved absolute path strings.
+
+    These are the held-out grader code and other trials' data: the repository with every worktree and Git directory,
+    the user's real Pi sessions, the caller's results directories, and the sibling workspaces and run root of
+    pi_runner's ``<run>/workspaces/<trial>`` layout. Hiding them with a tmpfs is not enough; no later bind may
+    re-expose them, so :func:`confine` also rejects binds that overlap this set.
+
+    A shared root such as ``/tmp`` is never protected as a whole, only the specific directories below it: the
+    profile replaces those mounts with an empty tmpfs anyway, and protecting all of ``/tmp`` because a workspace was
+    created there would reject the credentials file of every caller that uses a temporary directory.
+    """
+    trees = {
+        Path.home().resolve() / ".pi" / "agent" / "sessions",
         *_git_paths(Path(__file__).resolve().parent),
         *_git_paths(workspace),
     }
@@ -166,15 +315,33 @@ def _hidden_paths(workspace, results_dirs):
         path = Path(item).expanduser()
         if not path.is_absolute():
             raise ConfinementError(f"results directory must be absolute: {item}")
-        candidates.add(path.resolve())
+        if str(path) in SHARED_ROOTS:
+            raise ConfinementError(f"refusing to protect the shared directory {path}")
+        trees.add(path)
     # Sibling trial workspaces, unless the workspace sits directly in a system directory. In pi_runner's
     # <run>/workspaces/<trial> layout, the whole run directory, including every trial's logs.
-    if str(workspace.parent) not in UNHIDEABLE:
-        candidates.add(workspace.parent)
-    if workspace.parent.name == "workspaces" and str(workspace.parent.parent) not in UNHIDEABLE:
-        candidates.add(workspace.parent.parent)
+    if str(workspace.parent) not in SHARED_ROOTS:
+        trees.add(workspace.parent)
+    if workspace.parent.name == "workspaces" and str(workspace.parent.parent) not in SHARED_ROOTS:
+        trees.add(workspace.parent.parent)
+    resolved = _resolved(trees)
+    if str(workspace) in resolved:
+        raise ConfinementError("the workspace itself cannot be a protected path")
+    return sorted(resolved)
+
+
+def _resolved(paths):
+    try:
+        return {str(Path(path).resolve()) for path in paths}
+    except SETUP_ERRORS as exc:
+        raise ConfinementError(f"cannot resolve a profile path: {exc!r}") from exc
+
+
+def _hidden_paths(workspace, protected):
+    # /tmp and /run are always fresh tmpfs mounts; see confine().
+    candidates = {*protected, *_resolved({Path.home(), Path("/var/tmp")})}
     hidden = []
-    for path in sorted({str(p.resolve()) for p in candidates}):
+    for path in sorted(candidates):
         if path in UNHIDEABLE:
             raise ConfinementError(f"refusing to hide system path {path}")
         if path == str(workspace):
@@ -183,6 +350,29 @@ def _hidden_paths(workspace, results_dirs):
             continue
         hidden.append(path)
     return hidden
+
+
+def _check_bind(path, protected, description, same_path=True):
+    """Reject a bind that would re-expose protected data, or that cannot work where it is asked to appear.
+
+    A bind is refused when it equals a protected tree, lies inside one, or contains one: binding
+    ``executable.parent`` back after hiding its parent silently re-exposed a protected results directory.
+
+    With ``same_path`` (a bind that appears at its own host path, such as the Pi installation), a source under a
+    mount the profile replaces is refused too, because that path is empty inside the profile and ``execvp`` would
+    fail with ENOENT. Single files bound into the private agent directory are exempt: they appear elsewhere.
+    """
+    for tree in protected:
+        if path == tree or _is_within(path, tree) or _is_within(tree, path):
+            raise ConfinementError(f"{description} {path} overlaps the protected path {tree}")
+    if not same_path:
+        return
+    for mount in FRESH_MOUNTS:
+        if _is_within(path, mount):
+            raise ConfinementError(
+                f"{description} {path} lies under {mount}, which the profile mounts fresh and empty, so the "
+                f"confined process would fail with ENOENT. Use a copy outside {mount} instead."
+            )
 
 
 def confine(
@@ -198,15 +388,20 @@ def confine(
 
     ``results_dirs`` are further host paths to hide, such as the run root holding other trials' logs.
     ``extra_agent_files`` are agent-directory files (e.g. ``models.json``) to expose read-only; by default only
-    ``auth.json`` is exposed. ``ro_binds`` are extra host paths bound read-only at the same path.
+    ``auth.json`` is exposed. ``ro_binds`` are extra host paths bound read-only at the same path. Any of them that
+    would re-expose protected data, or that lives under a mount the profile replaces, is rejected.
     Returns ``(wrapped_command, env)``; ``env`` is the complete environment, not a delta.
     """
     if not command:
         raise ConfinementError("empty command")
     bwrap = find_bwrap()
-    workspace = Path(workspace).resolve()
-    if not workspace.is_dir():
-        raise ConfinementError(f"workspace is not a directory: {workspace}")
+    program = seccomp_program()
+    try:
+        workspace = Path(workspace).resolve()
+        if not workspace.is_dir():
+            raise ConfinementError(f"workspace is not a directory: {workspace}")
+    except SETUP_ERRORS as exc:
+        raise ConfinementError(f"cannot use the workspace {workspace}: {exc!r}") from exc
     found = shutil.which(command[0])
     if found is None:
         raise ConfinementError(f"executable not found: {command[0]}")
@@ -221,9 +416,20 @@ def confine(
             raise ConfinementError(f"agent file is not an existing plain file name: {name}")
         agent_files.append((source, name))
 
-    hidden = _hidden_paths(workspace, results_dirs)
+    protected = _protected_trees(workspace, results_dirs)
+    hidden = _hidden_paths(workspace, protected)
+    # Every host path the profile re-exposes by name, checked before anything is mounted.
+    extra_paths = []
+    for path in _ordered_resolved(ro_binds):
+        _check_bind(path, protected, "read-only bind")
+        extra_paths.append(path)
+    _check_bind(str(executable.parent), protected, "the Pi installation directory")
+    _check_bind(str(auth.resolve()), protected, "the credentials file", same_path=False)
+    for source, _ in agent_files:
+        _check_bind(str(Path(source).resolve()), protected, "agent file", same_path=False)
+
     args = [bwrap, "--unshare-all", "--share-net", "--unshare-user", "--disable-userns"]
-    args += ["--die-with-parent", "--new-session"]
+    args += ["--die-with-parent", "--new-session", "--seccomp", str(SECCOMP_FD)]
     args += ["--proc", "/proc", "--dev", "/dev"]
     for path in FRESH_MOUNTS:
         args += ["--tmpfs", path]
@@ -244,13 +450,15 @@ def confine(
             args += ["--tmpfs", path]
         else:
             args += ["--ro-bind", "/dev/null", path]
-    for path in [executable.parent, *(Path(p).resolve() for p in ro_binds)]:
-        if not path.exists():
+    for path in [str(executable.parent), *extra_paths]:
+        if not Path(path).exists():
             raise ConfinementError(f"read-only bind source does not exist: {path}")
-        if any(_is_within(str(path), h) for h in hidden):
-            args += ["--ro-bind", str(path), str(path)]
+        if any(_is_within(path, h) for h in hidden):
+            args += ["--ro-bind", path, path]
     args += ["--perms", "0700", "--tmpfs", AGENT_DIR]
-    args += ["--bind", str(auth), f"{AGENT_DIR}/auth.json"]
+    # Read-only: a token refresh is the host's job (prepare_host_auth), so the confined process can neither corrupt
+    # auth.json nor race a host Pi process over its lock directory. A refresh inside fails cleanly instead.
+    args += ["--ro-bind", str(auth), f"{AGENT_DIR}/auth.json"]
     for source, name in agent_files:
         args += ["--ro-bind", str(source), f"{AGENT_DIR}/{name}"]
     args += ["--bind", str(workspace), WORK_DIR, "--chdir", WORK_DIR, "--remount-ro", "/"]
@@ -271,7 +479,72 @@ def confine(
     args.append("--clearenv")
     for name, value in sorted(env.items()):
         args += ["--setenv", name, value]
-    return args + ["--", str(executable), *command[1:]], env
+    return shim_command([*args, "--", str(executable), *command[1:]], program), env
+
+
+def _ordered_resolved(paths):
+    seen = []
+    for path in paths:
+        try:
+            resolved = str(Path(path).resolve())
+        except SETUP_ERRORS as exc:
+            raise ConfinementError(f"cannot resolve the read-only bind {path}: {exc!r}") from exc
+        if resolved not in seen:
+            seen.append(resolved)
+    return seen
+
+
+def prepare_host_auth(provider, model, min_expiry_seconds, pi_binary="pi"):
+    """Make the host's OAuth token valid for at least ``min_expiry_seconds``, before a trial starts.
+
+    ``auth.json`` is read-only inside the profile, so the confined Pi cannot refresh it. The runner calls this on the
+    host, where a refresh is serialised by Pi's own lock, with a minimum validity that covers the whole trial.
+
+    The token itself is never captured: stdout goes to ``/dev/null``. Only stderr is read, for a short error message.
+    Raises :class:`HostAuthError` when the token cannot be prepared.
+    """
+    duration = _expiry_duration(min_expiry_seconds)
+    command = [
+        pi_binary,
+        "auth",
+        "print-bearer-token",
+        "--provider",
+        str(provider),
+        "--model",
+        str(model),
+        "--min-expiry",
+        duration,
+    ]
+    try:
+        done = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,  # the bearer token must never be captured, logged or printed
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HostAuthError(f"cannot run '{pi_binary} auth print-bearer-token': {exc!r}") from exc
+    if done.returncode != 0:
+        detail = done.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        reason = detail[-1][:200] if detail else f"exit {done.returncode}"
+        raise HostAuthError(f"cannot prepare the host token for {provider}/{model} ({duration}): {reason}")
+    return duration
+
+
+def _expiry_duration(min_expiry_seconds):
+    """Format whole seconds as a Pi auth duration (``30m``, ``1h``, ``90s``)."""
+    try:
+        seconds = int(min_expiry_seconds)
+    except (TypeError, ValueError) as exc:
+        raise HostAuthError(f"minimum token validity must be a number of seconds: {min_expiry_seconds!r}") from exc
+    if seconds != min_expiry_seconds or seconds <= 0:
+        raise HostAuthError(f"minimum token validity must be a positive whole number of seconds: {min_expiry_seconds}")
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
 
 
 # --- confinement-signal scanner -------------------------------------------------------------------------------
@@ -284,11 +557,27 @@ HOME_CALL = re.compile(
     r"Path\.home\(\)|expanduser\(|getenv\(\s*['\"]HOME|environ\[\s*['\"]HOME|environ\.get\(\s*['\"]HOME"
 )
 QUOTED_HOME = re.compile(r"[\"'](\$HOME|\$\{HOME\})[\"']")
-ERROR_LINE = re.compile(
-    r"permission denied|no such file or directory|read-only file system|operation not permitted|not a directory"
-    r"|\bE(?:ACCES|NOENT|ROFS|PERM)\b",
-    re.IGNORECASE,
+# A denied operation is a signal on its own, whatever path it names: a confined `touch /etc/x` fails on a system path
+# that the allowlist deliberately ignores, but the denial still shows the agent probing outside its workspace.
+DENIED_REASONS = (
+    ("read-only file system", re.compile(r"read-only file system|\bEROFS\b", re.IGNORECASE)),
+    ("permission denied", re.compile(r"permission denied|\bEACCES\b", re.IGNORECASE)),
+    ("operation not permitted", re.compile(r"operation not permitted|\bEPERM\b", re.IGNORECASE)),
 )
+# A missing file is only a signal when the path it names is outside the workspace; inside, it is ordinary work.
+MISSING_FILE = re.compile(r"no such file or directory|not a directory|\bENOENT\b|\bENOTDIR\b", re.IGNORECASE)
+# A URL authority after the scheme is split off ("//example.com/a"), not an absolute path.
+HOST_LIKE = re.compile(r"^[\w-]+(\.[\w-]+)+(:\d+)?$")
+URL = re.compile(r"\b[a-z][a-z0-9+.\-]*://\S+", re.IGNORECASE)
+# Errors raised by a malformed event rather than by a bug in the scanner.
+SCAN_ERRORS = (AttributeError, KeyError, TypeError, ValueError)
+
+
+def normalise_path(word):
+    """Collapse repeated leading slashes, ``/./`` and ``..`` so ``//home/g`` and ``/home/./g`` compare as /home/g."""
+    if not word:
+        return word
+    return posixpath.normpath(re.sub(r"^/{2,}", "/", word))
 
 
 def classify_path(word, workspace=WORK_DIR):
@@ -298,18 +587,21 @@ def classify_path(word, workspace=WORK_DIR):
     if word.startswith(("~", "$HOME", "${HOME}")):
         return "home_path"
     parts = word.split("/")
-    if word.startswith("/") and not word.startswith("//"):
-        if _is_within(posixpath.normpath(word), workspace):
+    if word.startswith("/"):
+        if word.startswith("//") and HOST_LIKE.match(parts[2] if len(parts) > 2 else ""):
+            return None
+        normalised = normalise_path(word)
+        if _is_within(normalised, workspace):
             return None
         if ".." in parts:
             return "parent_relative_path"
-        if len(word) < 2 or not (word[1].isalnum() or word[1] in "._~-"):
+        if len(normalised) < 2 or not (normalised[1].isalnum() or normalised[1] in "._~-"):
             return None
-        if any(_is_within(posixpath.normpath(word), prefix) for prefix in SYSTEM_PREFIXES):
+        if any(_is_within(normalised, prefix) for prefix in SYSTEM_PREFIXES):
             return None
         return "absolute_path"
     # Relative paths only escape when they climb above their starting directory.
-    if ".." in parts and posixpath.normpath(word).split("/")[0] == "..":
+    if ".." in parts and normalise_path(word).split("/")[0] == "..":
         return "parent_relative_path"
     return None
 
@@ -321,6 +613,8 @@ def _words(text):
 def _scan_text(text, workspace):
     # Keep a quoted "$HOME" attached to the path that follows it, as the shell does.
     text = QUOTED_HOME.sub(r"\1", text)
+    # URLs are not filesystem paths; drop them whole so "//example.com/a" is not read as an absolute path.
+    text = URL.sub(" ", text)
     hits = [(kind, word) for word in _words(text) if (kind := classify_path(word, workspace))]
     match = HOME_CALL.search(text)
     if match:
@@ -376,8 +670,11 @@ def scan_confinement_signals(events, workspace=WORK_DIR):
     """Scan a Pi JSON event log (path or iterable of event dicts) for confinement-violation signals.
 
     Returns a de-duplicated list of ``{"kind", "detail"}``. Kinds: ``parent_relative_path``, ``absolute_path`` and
-    ``home_path`` for tool arguments that point outside the workspace, and ``denied_path`` for tool results that report
-    a permission or missing-file error on such a path. Hits are heuristic and need review by hand.
+    ``home_path`` for tool arguments that point outside the workspace; ``denied_path`` for a tool result reporting a
+    missing file outside the workspace; ``denied_operation`` for a result the kernel or the profile refused
+    (read-only filesystem, permission denied, operation not permitted) on any path, including system paths the
+    argument allowlist ignores; and ``malformed_event`` for an event the scanner could not read. Hits are heuristic
+    and need review by hand.
     """
     signals = []
     seen = set()
@@ -390,28 +687,61 @@ def scan_confinement_signals(events, workspace=WORK_DIR):
             signals.append({"kind": kind, "detail": detail})
 
     for event in _iter_events(events):
-        kind = event.get("type")
-        tool = str(event.get("toolName") or "?")
-        if kind == "tool_execution_start":
-            hits = _scan_args(event.get("args"), workspace)
-            started[event.get("toolCallId")] = hits
-            for hit_kind, word in hits:
-                add(hit_kind, tool, word)
-        elif kind == "tool_execution_end":
-            error_lines = [line for line in _result_text(event.get("result")).splitlines() if ERROR_LINE.search(line)]
-            denied = [word for line in error_lines for _, word in _scan_text(line, workspace)]
-            if error_lines and not denied:
-                denied = [word for _, word in started.get(event.get("toolCallId"), [])[:1]]
-            for word in denied:
-                add("denied_path", tool, word)
+        try:
+            _scan_event(event, workspace, started, add)
+        except SCAN_ERRORS as exc:
+            # A malformed event (an unhashable toolCallId, a result of the wrong shape) must not end the scan.
+            add("malformed_event", _event_tool(event), f"{type(exc).__name__}: {exc}")
     return signals
+
+
+def _event_tool(event):
+    try:
+        name = event.get("toolName")
+    except SCAN_ERRORS:
+        return "?"
+    return name if isinstance(name, str) and name else "?"
+
+
+def _scan_event(event, workspace, started, add):
+    kind = event.get("type")
+    tool = _event_tool(event)
+    if kind == "tool_execution_start":
+        hits = _scan_args(event.get("args"), workspace)
+        started[event.get("toolCallId")] = hits
+        for hit_kind, word in hits:
+            add(hit_kind, tool, word)
+    elif kind == "tool_execution_end":
+        # Paths the matching call already asked for, used when the error message itself names no outside path.
+        fallback = [word for _, word in started.get(event.get("toolCallId"), [])[:1]]
+        for hit_kind, detail in _scan_result(_result_text(event.get("result")), workspace, fallback):
+            add(hit_kind, tool, detail)
+
+
+def _scan_result(text, workspace, fallback):
+    """Return (kind, detail) pairs for the denied-operation and missing-path outcomes in one tool result."""
+    hits = []
+    for line in text.splitlines():
+        outside = [word for _, word in _scan_text(line, workspace)]
+        reason = next((name for name, pattern in DENIED_REASONS if pattern.search(line)), None)
+        if reason:
+            targets = outside or _path_words(line) or fallback or [line.strip()]
+            hits.append(("denied_operation", f"{reason}: {targets[0]}"))
+        elif MISSING_FILE.search(line):
+            hits += [("denied_path", word) for word in outside or fallback]
+    return hits
+
+
+def _path_words(text):
+    """Path-like words in an error message, so a denial on a system path still reports what was touched."""
+    return [word for word in _words(URL.sub(" ", text)) if "/" in word or word == ".."]
 
 
 # --- self-test -------------------------------------------------------------------------------------------------
 
 # Run in place of Pi under the profile. Each probe reports whether it succeeded; it never prints file contents.
 FAKE_AGENT = r"""
-import json, os, subprocess, sys
+import ctypes, json, os, socket, subprocess, sys
 cfg = json.loads(sys.argv[1])
 results = {}
 def probe(name, fn):
@@ -446,19 +776,76 @@ for name, script in cfg["shell"].items():
 probe("python_list_sessions", lambda: os.listdir(cfg["sessions"]))
 probe("write_outside_workspace", lambda: open("/etc/confine-probe", "w").close())
 probe("create_root_entry", lambda: os.mkdir("/confine-probe"))
+
+# The network namespace is shared, so host abstract Unix sockets have no mount to hide behind: only seccomp stops them.
+def unix_socket():
+    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).close()
+def connect_abstract():
+    handle = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        handle.connect(b"\x00" + cfg["abstract_socket"].encode())
+    finally:
+        handle.close()
+def io_uring_setup():
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    libc.syscall.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p]
+    params = ctypes.create_string_buffer(256)
+    ring = libc.syscall(425, 8, params)
+    if ring < 0:
+        raise OSError(ctypes.get_errno(), "io_uring_setup rejected")
+    os.close(ring)
+def connect_tcp():
+    with socket.create_connection(("127.0.0.1", cfg["tcp_port"]), timeout=10) as handle:
+        handle.send(b"ping")
+def socketpair_works():
+    left, right = socket.socketpair()
+    left.send(b"x")
+    assert right.recv(1) == b"x"
+    left.close()
+    right.close()
+def pipe_works():
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"x")
+    assert os.read(read_fd, 1) == b"x"
+    os.close(read_fd)
+    os.close(write_fd)
+def clean_fd_table():
+    targets = {}
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            targets[name] = os.readlink("/proc/self/fd/" + name)
+        except OSError:
+            continue
+    # The handle listdir itself holds points at this /proc/<pid>/fd directory; anything else was inherited.
+    extra = sorted(n for n, t in targets.items() if n not in ("0", "1", "2") and not t.endswith("/fd"))
+    if extra:
+        raise OSError("inherited descriptors: " + ", ".join(n + " -> " + targets[n] for n in extra))
+probe("create_unix_socket", unix_socket)
+probe("connect_host_abstract_socket", connect_abstract)
+probe("io_uring_setup", io_uring_setup)
+probe("outbound_tcp", connect_tcp)
+probe("socketpair_works", socketpair_works)
+probe("pipe_works", pipe_works)
+probe("clean_fd_table", clean_fd_table)
+probe("auth_read", lambda: read(cfg["agent_dir"] + "/auth.json"))
 def own_workspace():
     with open("task.txt", encoding="utf-8") as handle:
         assert handle.read() == cfg["task_text"]
     with open("out.txt", "w", encoding="utf-8") as handle:
         handle.write("written inside")
 probe("workspace_read_write", own_workspace)
-def auth_write_through():
+# Pi refreshes a token by taking a lock directory beside auth.json and rewriting the file. The lock still works
+# (the agent directory is a tmpfs) but the rewrite must fail: refresh is the host's job, see prepare_host_auth.
+def auth_refresh():
     lock = cfg["agent_dir"] + "/auth.json.lock"
     os.mkdir(lock)
-    with open(cfg["agent_dir"] + "/auth.json", "w", encoding="utf-8") as handle:
-        handle.write(cfg["auth_new"])
-    os.rmdir(lock)
-probe("auth_write_through", auth_write_through)
+    try:
+        with open(cfg["agent_dir"] + "/auth.json", "w", encoding="utf-8") as handle:
+            handle.write(cfg["auth_new"])
+    finally:
+        os.rmdir(lock)
+probe("auth_refresh", auth_refresh)
 results["cwd"] = os.getcwd()
 results["leaked_env"] = sorted(k for k in os.environ if k.startswith("PI_") and k not in cfg["allowed_env"])
 print(json.dumps(results))
@@ -482,24 +869,38 @@ MUST_FAIL = (
     "python_list_sessions",
     "write_outside_workspace",
     "create_root_entry",
+    "create_unix_socket",
+    "connect_host_abstract_socket",
+    "auth_refresh",
 )
-MUST_SUCCEED = ("workspace_read_write", "auth_write_through")
+MUST_SUCCEED = (
+    "workspace_read_write",
+    "auth_read",
+    "outbound_tcp",
+    "socketpair_works",
+    "pipe_works",
+    "clean_fd_table",
+)
 # Host writes that fail even without the profile, so the unconfined control does not expect them to succeed.
 HOST_DENIED = ("write_outside_workspace", "create_root_entry")
+# Must fail under the profile, but may also be unavailable on the bare host, so the control does not require them.
+CONFINED_ONLY = ("io_uring_setup",)
 
 
 def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
     """Run the fake agent and return (ok, report). It uses a fake credentials file, never the real one.
 
-    With ``confined`` (the acceptance test), ok means every escape probe failed and the workspace and the credentials
-    write-back worked. Without it (the control), ok means the escape probes succeed on the bare host, which shows the
-    probes are able to detect a missing profile.
+    With ``confined`` (the acceptance test), ok means every escape probe failed, the workspace stayed usable, the
+    credentials stayed readable but unchanged, and pipes, socketpair and TCP still work. Without it (the control), ok
+    means the escape probes succeed on the bare host, which shows the probes are able to detect a missing profile.
     """
     repo_lab = Path(__file__).resolve().parent
     if base is None:
         base = repo_lab / "local-results"
     base.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="confine-selftest-", dir=base))
+    listeners = []
+    temporary = [root]
     try:
         workspace = root / "workspaces" / "trial"
         sibling = root / "workspaces" / "sibling"
@@ -509,8 +910,13 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
         (workspace / "task.txt").write_text("task data", encoding="utf-8")
         (sibling / "secret.txt").write_text("other trial", encoding="utf-8")
         (logs / "pi-events.jsonl").write_text("{}\n", encoding="utf-8")
-        fake_auth = root / "fake-agent" / "auth.json"
-        fake_auth.parent.mkdir()
+        # The credentials file must sit outside every protected tree, exactly as the real ~/.pi/agent/auth.json does:
+        # confine() refuses to bind a file out of the repository, so a fake one cannot live under the run root.
+        auth_base = Path.home() / ".cache" / "autonomy-lab"
+        auth_base.mkdir(parents=True, exist_ok=True)
+        fake_agent = Path(tempfile.mkdtemp(prefix="confine-selftest-agent-", dir=auth_base))
+        temporary.append(fake_agent)
+        fake_auth = fake_agent / "auth.json"
         fake_auth.write_text("{}", encoding="utf-8")
         runner = repo_lab / "runner.py"
         main_checkout = sorted(p for p in _git_paths(repo_lab) if (p / "autonomy_lab" / "runner.py").is_file())
@@ -522,6 +928,17 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
             run_sockets = sorted(str(p) for p in Path("/run").glob("**/*.sock") if p.is_socket())[:20]
         except OSError:
             run_sockets = []
+        # A harmless host abstract socket, reachable through the shared network namespace unless seccomp stops it,
+        # and a loopback TCP listener, which must keep working because the model provider needs the network.
+        abstract_name = "confine-selftest-" + os.urandom(8).hex()
+        abstract = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        abstract.bind(b"\x00" + abstract_name.encode())
+        abstract.listen(2)
+        listeners.append(abstract)
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.bind(("127.0.0.1", 0))
+        tcp.listen(2)
+        listeners.append(tcp)
         shell_probes = {}
         if shutil.which("unshare"):
             # A nested user namespace is the first step towards remounting the profile's hidden paths.
@@ -550,6 +967,8 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
                 **shell_probes,
             },
             "sessions": str(sessions),
+            "abstract_socket": abstract_name,
+            "tcp_port": tcp.getsockname()[1],
             "task_text": "task data",
             "agent_dir": AGENT_DIR if confined else str(fake_auth.parent),
             "auth_new": '{"rewritten": true}',
@@ -572,18 +991,21 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
             checks = {name: results[name]["succeeded"] for name in names if name not in HOST_DENIED}
             return all(checks.values()), {"checks": checks, "probes": results}
         checks = {}
-        for name in (*MUST_FAIL, *optional):
+        for name in (*MUST_FAIL, *CONFINED_ONLY, *optional):
             checks[name] = not results[name]["succeeded"]
         for name in MUST_SUCCEED:
             checks[name] = results[name]["succeeded"]
         checks["cwd_is_work"] = results["cwd"] == WORK_DIR
         checks["no_leaked_pi_env"] = results["leaked_env"] == []
         checks["workspace_write_visible_on_host"] = (workspace / "out.txt").is_file()
-        checks["auth_written_back_on_host"] = fake_auth.read_text(encoding="utf-8") == cfg["auth_new"]
+        checks["auth_unchanged_on_host"] = fake_auth.read_text(encoding="utf-8") == "{}"
         report = {"checks": checks, "probes": {k: v for k, v in results.items() if isinstance(v, dict)}}
         return all(checks.values()), report
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        for listener in listeners:
+            listener.close()
+        for path in temporary:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def main():
