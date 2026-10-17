@@ -8,10 +8,15 @@ With --task-bank DIR the runner instead validates a LOOP_SPEC §4.1 task bank,
 writes a seeded design.json (--experiment, --design-seed), runs every trial,
 grades each decision with its own held-out check and classifies failures (§2.4).
 Add --design-only to write the design and prompts without running Pi.
+In task-bank mode Pi runs under the §4.2 bubblewrap profile and every check
+under the §4.2a grading sandbox, and run roots default to a directory outside
+the repository ($XDG_STATE_HOME/autonomy-lab or ~/.local/state/autonomy-lab).
 """
 
 import argparse
+import contextlib
 import csv
+import functools
 import hashlib
 import importlib
 import json
@@ -26,9 +31,19 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from autonomy_lab import confine as confinement
 from autonomy_lab.design import EXPERIMENTS, canonical_json, generate_design, trial_files
 from autonomy_lab.runner import TASKS, build_prompt, check_candidate, prepare_workspace
-from autonomy_lab.taskbank import format_report, grade_workspace, load_bank, task_bank_sha256, validate_bank
+from autonomy_lab.taskbank import (
+    GradingError,
+    default_grading_sandbox,
+    format_report,
+    grade_modules,
+    load_bank_with_hash,
+    snapshot_modules,
+    task_bank_sha256,
+    validate_bank,
+)
 
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
@@ -45,8 +60,72 @@ def validate_model(model):
     return model
 
 
+# Fields an event must carry, by type, for the harness to trust it: (field, type, required). Taken from Pi 1.3.0's
+# JSON event schema (docs/json.md, docs/message-types.md) and limited to the fields the harness reads, so a
+# well-formed Pi stream is never flagged. Wire message_update records carry `usage` and `assistantMessageEvent`,
+# not the SDK's cumulative `message`.
+EVENT_FIELDS = {
+    "message_start": (("message", dict, True),),
+    "message_end": (("message", dict, True),),
+    "message_update": (("assistantMessageEvent", dict, True), ("usage", dict, False)),
+    "tool_execution_start": (("toolCallId", str, True), ("toolName", str, True), ("args", dict, False)),
+    "tool_execution_update": (("toolCallId", str, True), ("toolName", str, True)),
+    "tool_execution_end": (("toolCallId", str, True), ("toolName", str, True), ("isError", bool, False)),
+    "auto_retry_end": (("success", bool, True), ("finalError", str, False)),
+    "agent_settled": (("aborted", bool, False),),
+}
+MESSAGE_FIELDS = (
+    ("role", str, True),
+    ("provider", str, False),
+    ("model", str, False),
+    ("thinkingLevel", str, False),
+    ("stopReason", str, False),
+    ("errorMessage", str, False),
+    ("usage", dict, False),
+    ("content", (list, str), False),
+)
+
+
+def _field_problem(where, record, fields):
+    for field, expected, required in fields:
+        if field not in record:
+            if required:
+                return f"{where} without {field}"
+        elif not isinstance(record[field], expected) or (expected is not bool and isinstance(record[field], bool)):
+            names = expected.__name__ if isinstance(expected, type) else " or ".join(t.__name__ for t in expected)
+            return f"{where} {field} is not a {names}"
+    return None
+
+
+def event_problem(event):
+    """Why ``event`` is structurally malformed for the harness (LOOP_SPEC §2.4), or None when it can be trusted."""
+    if not isinstance(event, dict):
+        return "event is not a JSON object"
+    kind = event.get("type")
+    if not isinstance(kind, str) or not kind:
+        return "event has no type"
+    problem = _field_problem(kind, event, EVENT_FIELDS.get(kind, ()))
+    if problem:
+        return problem
+    message = event.get("message")
+    if kind in ("message_start", "message_end") and isinstance(message, dict):
+        problem = _field_problem(f"{kind} message", message, MESSAGE_FIELDS)
+        if problem:
+            return problem
+        if kind == "message_end" and message["role"] == "assistant" and "stopReason" not in message:
+            return "message_end assistant message without stopReason"
+    if kind == "message_update" and not isinstance(event["assistantMessageEvent"].get("type"), str):
+        return "message_update assistantMessageEvent without type"
+    return None
+
+
 def parse_pi_events(path):
-    """Extract measurable events without assuming that process exit 0 means model success."""
+    """Extract measurable events without assuming that process exit 0 means model success.
+
+    Every event is validated (event_problem) before any metric is read from it; a malformed one is counted in
+    malformed_events and otherwise ignored, so a stream of the wrong shape can neither crash the harness nor
+    contribute metrics.
+    """
     metrics = {
         "settled": False,
         "aborted": False,
@@ -62,6 +141,7 @@ def parse_pi_events(path):
         "assistant_messages": 0,
         "assistant_messages_missing_runtime": 0,
         "invalid_json_lines": 0,
+        "malformed_events": 0,
     }
     model_ids = set()
     thinking_levels = set()
@@ -79,6 +159,9 @@ def parse_pi_events(path):
                 continue
             if not isinstance(event, dict):
                 metrics["invalid_json_lines"] += 1
+                continue
+            if event_problem(event):
+                metrics["malformed_events"] += 1
                 continue
             kind = event.get("type")
             if kind == "agent_settled":
@@ -154,12 +237,13 @@ def runtime_matches_request(run, model, thinking):
     """True only when every assistant message reports the requested model and thinking.
 
     A message missing its provider, model or thinking level, or any unparseable
-    event line, counts as unverified rather than as a match.
+    or malformed event, counts as unverified rather than as a match.
     """
     return (
         run["assistant_messages"] > 0
         and run["assistant_messages_missing_runtime"] == 0
         and run["invalid_json_lines"] == 0
+        and run.get("malformed_events", 0) == 0
         and run["model_ids"] == [model]
         and run["thinking_levels"] == [thinking]
     )
@@ -338,6 +422,7 @@ def run_experiment(args):
                             "assistant_messages": 0,
                             "assistant_messages_missing_runtime": 0,
                             "invalid_json_lines": 0,
+                            "malformed_events": 0,
                             "stderr_tail": str(exc),
                         }
                     scope_ok = safe_trial_scope(workspace, selected, expected_checks, expected_prompt)
@@ -430,17 +515,6 @@ INFRASTRUCTURE_FAILURES = (
 AGENT_FAILURES = ("timeout", "length", "heldout_failed")
 STALL_SECONDS = 120
 
-# Fields an event must carry, by type, for the harness to trust it:
-# (field, type, required). Deliberately limited to what parse_pi_events and
-# the classifier read, so a well-formed Pi stream is never flagged.
-EVENT_FIELDS = {
-    "message_start": (("message", dict, True),),
-    "message_update": (("message", dict, True),),
-    "message_end": (("message", dict, True),),
-    "auto_retry_end": (("success", bool, True),),
-    "agent_settled": (("aborted", bool, False),),
-    "tool_execution_end": (("isError", bool, False),),
-}
 # Last events that mean Pi is waiting for the provider to start answering.
 PENDING_EVENTS = ("session", "agent_start", "turn_start", "auto_retry_start")
 AUTH_PATTERN = re.compile(
@@ -448,24 +522,6 @@ AUTH_PATTERN = re.compile(
     r"|login required|forbidden|token (?:has )?expired|invalid[ _]token",
     re.IGNORECASE,
 )
-
-
-def _event_problem(event):
-    if not isinstance(event, dict):
-        return "event is not a JSON object"
-    kind = event.get("type")
-    if not isinstance(kind, str) or not kind:
-        return "event has no type"
-    for field, expected, required in EVENT_FIELDS.get(kind, ()):
-        if field not in event:
-            if required:
-                return f"{kind} without {field}"
-        elif not isinstance(event[field], expected):
-            return f"{kind} {field} is not a {expected.__name__}"
-    message = event.get("message")
-    if isinstance(message, dict) and kind in EVENT_FIELDS and not isinstance(message.get("role"), str):
-        return f"{kind} message without a role"
-    return None
 
 
 def scan_events(path):
@@ -498,7 +554,7 @@ def scan_events(path):
         except ValueError:
             scan["invalid_lines"].append(number)
             continue
-        problem = _event_problem(event)
+        problem = event_problem(event)
         if problem:
             scan["malformed"].append(f"line {number}: {problem}")
             continue
@@ -545,8 +601,11 @@ def pending_request(event):
     if kind == "message_end":
         # A user prompt or tool result was just sent; the reply is outstanding.
         return message["role"] != "assistant"
-    if kind in ("message_start", "message_update") and message["role"] == "assistant":
+    if kind == "message_start" and message["role"] == "assistant":
         return not _has_output(message)
+    if kind == "message_update":
+        # Wire updates are deltas: any content-block update means tokens arrived.
+        return event["assistantMessageEvent"]["type"] == "start"
     return False
 
 
@@ -560,6 +619,8 @@ def classify_failure(run, scan, decision_results, idle_seconds=None):
     """
     if run.get("sandbox_error"):
         return "sandbox", None
+    if run.get("auth_error"):
+        return "auth", None
     if run.get("spawn_error"):
         return "spawn", None
     invalid = list(scan["invalid_lines"])
@@ -608,6 +669,7 @@ def _failed_launch(message):
         "assistant_messages": 0,
         "assistant_messages_missing_runtime": 0,
         "invalid_json_lines": 0,
+        "malformed_events": 0,
         "stderr_tail": message,
     }
 
@@ -652,12 +714,36 @@ def load_confine(spec):
         raise ValueError(f"--confine {spec}: {exc}") from exc
 
 
-def _run_bank_trial(root, trial, attempt, tasks_by_id, design, args, confine):
+SPEC_FILES = ("prompt.txt", "visible_checks.py")
+# Seconds of token validity beyond the trial timeout that prepare_host_auth must guarantee (LOOP_SPEC §4.2).
+AUTH_MARGIN_SECONDS = 300
+
+
+def spec_digests(workspace):
+    """SHA-256 of each workspace spec file, or None when it is missing, unreadable or not a regular file."""
+    digests = {}
+    for name in SPEC_FILES:
+        path = workspace / name
+        try:
+            digests[name] = None if path.is_symlink() else hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            digests[name] = None
+    return digests
+
+
+def _run_bank_trial(root, trial, attempt, tasks_by_id, design, args, pi_confine, grading, signal_workspace=None):
+    """Run, grade and classify one attempt of one design trial, and append its record to trials.jsonl.
+
+    ``pi_confine(command, workspace)`` wraps the Pi command (None runs Pi unconfined); ``grading`` is the
+    GradingSandbox every held-out check runs in (None: unconfined, tests only). ``signal_workspace`` is the
+    workspace path as Pi sees it, for the confinement-signal scanner (default: the host path).
+    """
     tasks = [tasks_by_id[task_id] for task_id in trial["task_ids"]]
     name = f"{trial['trial_id']}-a{attempt}"
     workspace = root / "workspaces" / name
     log_dir = root / "logs" / name
     workspace.mkdir(parents=True)
+    log_dir.mkdir(parents=True)
     for task in tasks:
         (workspace / task["module"]).write_text(task["starter"], encoding="utf-8")
     prompt, checks, filler_counts = trial_files(trial, tasks_by_id)
@@ -669,33 +755,59 @@ def _run_bank_trial(root, trial, attempt, tasks_by_id, design, args, confine):
     (workspace / "visible_checks.py").write_text(checks, encoding="utf-8")
     expected_prompt = (workspace / "prompt.txt").read_bytes()
     expected_checks = (workspace / "visible_checks.py").read_bytes()
+    expected_digests = spec_digests(workspace)
 
     print(f"START {name}", flush=True)
     failure_context = {}
+    provider, _, model_id = args.model.partition("/")
     try:
-        run = execute_pi(workspace, log_dir, prompt, args.model, args.thinking, args.pi_binary, args.timeout, confine)
-    except ConfinementSetupError as exc:
+        # auth.json is read-only inside the Pi profile, so the host refreshes it first (LOOP_SPEC §4.2).
+        confinement.prepare_host_auth(provider, model_id, args.timeout + AUTH_MARGIN_SECONDS, pi_binary=args.pi_binary)
+    except confinement.HostAuthError as exc:
         run = _failed_launch(str(exc))
-        failure_context["sandbox_error"] = str(exc)
-    except OSError as exc:
-        run = _failed_launch(str(exc))
-        failure_context["spawn_error"] = str(exc)
+        failure_context["auth_error"] = str(exc)
+    else:
+        try:
+            run = execute_pi(
+                workspace, log_dir, prompt, args.model, args.thinking, args.pi_binary, args.timeout, pi_confine
+            )
+        except ConfinementSetupError as exc:
+            run = _failed_launch(str(exc))
+            failure_context["sandbox_error"] = str(exc)
+        except OSError as exc:
+            run = _failed_launch(str(exc))
+            failure_context["spawn_error"] = str(exc)
+        else:
+            if pi_confine is not None and confinement.sandbox_setup_failed(run["exit_code"], run["stderr_tail"]):
+                failure_context["sandbox_error"] = (
+                    "the confinement profile failed to start: "
+                    + (run["stderr_tail"].strip().splitlines() or [""])[-1][:200]
+                )
     events_path = log_dir / "pi-events.jsonl"
     idle_seconds = None
     if run["timed_out"]:
         last_write = events_path.stat().st_mtime if events_path.exists() and events_path.stat().st_size else None
         idle_seconds = round(time.time() - last_write, 3) if last_write is not None else run["seconds"]
     scan = scan_events(events_path)
+    signals = confinement.scan_confinement_signals(events_path, workspace=signal_workspace or str(workspace))
 
+    # The agent has finished: hash the spec files and snapshot each designated module now, before any candidate
+    # code runs. Grading reads only the snapshots and the bank, never the workspace spec files, and the spec
+    # files are hashed again afterwards, so tampering at any point of the lifecycle is a safety stop (§4.2a).
+    digests_after_agent = spec_digests(workspace)
     selected = [{"file": task["module"]} for task in tasks]
     scope_ok = safe_trial_scope(workspace, selected, expected_checks, expected_prompt)
+    modules = snapshot_modules(workspace, tasks)
     try:
-        spec_intact = (workspace / "prompt.txt").read_bytes() == expected_prompt and (
-            workspace / "visible_checks.py"
-        ).read_bytes() == expected_checks
-    except OSError:
-        spec_intact = False
-    decision_results, details = grade_workspace(workspace, tasks)
+        decision_results, details = grade_modules(modules, tasks, sandbox=grading)
+    except GradingError as exc:
+        decision_results = {task["id"]: {d["id"]: False for d in task["decisions"]} for task in tasks}
+        details = {"grading_error": str(exc)}
+        failure_context.setdefault("sandbox_error", str(exc))
+    digests_after_grading = spec_digests(workspace)
+    intact_after_agent = digests_after_agent == expected_digests
+    intact_after_grading = digests_after_grading == expected_digests
+    spec_intact = intact_after_agent and intact_after_grading
     (log_dir / "grading.json").write_text(json.dumps(details, indent=2, sort_keys=True), encoding="utf-8")
     infrastructure, agent = classify_failure({**run, **failure_context}, scan, decision_results, idle_seconds)
     heldout_passed = all(passed for task in decision_results.values() for passed in task.values())
@@ -722,16 +834,25 @@ def _run_bank_trial(root, trial, attempt, tasks_by_id, design, args, confine):
         "task_bank_sha256": design["task_bank_sha256"],
         "infrastructure_failure": infrastructure,
         "agent_failure": agent,
-        "confinement_signals": [],
+        "confinement_signals": signals,
         "attempt": attempt,
-        "accepted": heldout_passed and complete and scope_ok and runtime_ok and infrastructure is None,
+        "accepted": heldout_passed and complete and scope_ok and spec_intact and runtime_ok and infrastructure is None,
         "held_out_tests_passed": heldout_passed,
         "task_scope_intact": scope_ok,
         "spec_files_intact": spec_intact,
+        "spec_files_intact_after_agent": intact_after_agent,
+        "spec_files_intact_after_grading": intact_after_grading,
         "agent_completed": complete,
         "runtime_matches_request": runtime_ok,
         "model_requested": args.model,
         "thinking_requested": args.thinking,
+        "pi_confined": pi_confine is not None,
+        "grading_confined": grading is not None,
+        "graded_module_sha256": {
+            task_id: hashlib.sha256(source).hexdigest() if source is not None else None
+            for task_id, (source, _) in modules.items()
+        },
+        "graded_module_problems": {task["id"]: modules[task["id"]][1] for task in tasks if modules[task["id"]][1]},
         # Per-decision grading has one exit code per check; see heldout_checks.
         "grader_exit_code": None,
         "depth": None,
@@ -746,11 +867,14 @@ def _run_bank_trial(root, trial, attempt, tasks_by_id, design, args, confine):
                 for decision_id, outcome in outcomes.items()
             }
             for task_id, outcomes in details.items()
+            if isinstance(outcomes, dict)
         },
         "stall_idle_seconds": idle_seconds,
-        "malformed_events": scan["malformed"][:20],
         **run,
     }
+    # parse_pi_events counts malformed events; the record keeps the scanner's descriptions under the §4.3 name.
+    record["malformed_event_count"] = run.get("malformed_events", 0)
+    record["malformed_events"] = scan["malformed"][:20]
     with (root / "trials.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
     print(
@@ -793,18 +917,51 @@ def _bank_summary(root, design, records, stop_reason):
         "agent_failures_final_attempt": dict(sorted(agent.items())),
         "accepted_final_attempt": sum(1 for r in final.values() if r["accepted"]),
         "runtime_mismatches": sum(1 for r in records if not r["runtime_matches_request"]),
+        # Heuristic hits that need review by hand (LOOP_SPEC §2.4); they do not stop the run on their own.
+        "attempts_with_confinement_signals": sum(1 for r in records if r["confinement_signals"]),
         "stop_reason": stop_reason,
     }
+
+
+def default_out_dir():
+    """Run roots live outside the Git checkout by default: $XDG_STATE_HOME/autonomy-lab, else ~/.local/state/..."""
+    state = os.environ.get("XDG_STATE_HOME")
+    base = Path(state) if state and Path(state).is_absolute() else Path.home() / ".local" / "state"
+    return base / "autonomy-lab"
+
+
+def resolve_out_dir(out):
+    """The absolute output directory for task-bank runs; refuses one inside the repository or any of its worktrees.
+
+    Trial workspaces, logs and grading output must not live in the checkout that holds the held-out checks and
+    the harness, both because the confinement profiles hide the repository and so that raw logs cannot be
+    committed by accident.
+    """
+    out = (Path(out).expanduser() if out is not None else default_out_dir()).resolve()
+    for tree in confinement.repository_trees():
+        if confinement.overlaps(out, tree):
+            raise ValueError(f"--out {out} overlaps the repository at {tree}; choose a directory outside it")
+    return out
+
+
+def _confine_pi(command, workspace, results_dirs):
+    """The default Pi confinement hook: the LOOP_SPEC §4.2 bubblewrap profile, hiding ``results_dirs`` too."""
+    return confinement.confine(command, workspace, results_dirs=results_dirs)
 
 
 def run_task_bank(args, confine=None):
     """Generate a seeded design over a validated task bank, then run, grade and classify every trial.
 
-    `confine(command, workspace) -> (command, env)` wraps the Pi command, for
-    example in a confinement profile; an exception from it is recorded as the
-    infrastructure failure "sandbox".
+    Pi runs under the LOOP_SPEC §4.2 bubblewrap profile by default (confine.confine), with the run root, the
+    output directory and the task bank hidden; ``confine(command, workspace) -> (command, env)`` replaces that
+    hook, and --unconfined-pi-for-tests disables it. Every check, during bank validation and grading, runs in the
+    §4.2a grading sandbox; the run is refused when bwrap is unavailable unless --unconfined-grading-for-tests is
+    given. An exception from the Pi hook, a profile that fails to start, or a grading sandbox failure is the
+    infrastructure failure "sandbox"; a host token that cannot be prepared is "auth".
     """
     design_only = getattr(args, "design_only", False)
+    unconfined_pi = getattr(args, "unconfined_pi_for_tests", False)
+    unconfined_grading = getattr(args, "unconfined_grading_for_tests", False)
     if not design_only:
         if shutil.which(args.pi_binary) is None:
             raise RuntimeError(f"Pi CLI '{args.pi_binary}' is not installed or not on PATH.")
@@ -817,10 +974,30 @@ def run_task_bank(args, confine=None):
         raise ValueError("--task-bank needs --experiment and --design-seed")
 
     bank = Path(args.task_bank).resolve()
-    report = validate_bank(bank)
-    if not report["valid"]:
-        raise ValueError("task bank failed mechanical validation:\n" + format_report(report))
-    tasks = load_bank(bank)
+    out_dir = resolve_out_dir(args.out)
+    if confinement.overlaps(out_dir, bank):
+        raise ValueError(f"--out {out_dir} overlaps the task bank {bank}")
+    # The output directory must exist before the grading sandbox is built, so that the sandbox hides it.
+    created = not out_dir.exists()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        try:
+            grading = default_grading_sandbox(
+                results_dirs=[str(out_dir), str(bank)], allow_unconfined=unconfined_grading
+            )
+        except (GradingError, confinement.ConfinementError) as exc:
+            raise RuntimeError(str(exc)) from exc
+        report = validate_bank(bank, sandbox=grading)
+        if not report["valid"]:
+            raise ValueError("task bank failed mechanical validation:\n" + format_report(report))
+    except (RuntimeError, ValueError):
+        if created:
+            with contextlib.suppress(OSError):
+                out_dir.rmdir()
+        raise
+    tasks, digest = load_bank_with_hash(bank)
+    if digest != report["task_bank_sha256"]:
+        raise ValueError("task bank changed between validation and loading")
     tasks_by_id = {task["id"]: task for task in tasks}
     design = generate_design(
         tasks,
@@ -835,10 +1012,11 @@ def run_task_bank(args, confine=None):
     )
 
     label = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    root = args.out.resolve() / f"run-{label}-{uuid.uuid4().hex[:6]}"
+    root = out_dir / f"run-{label}-{uuid.uuid4().hex[:6]}"
     root.mkdir(parents=True, exist_ok=False)
     # The full assignment, with every seed, is fixed on disk before any trial runs.
     (root / "design.json").write_text(canonical_json(design), encoding="utf-8")
+    report["grading_confined"] = grading is not None
     (root / "bank-validation.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     if design_only:
         for trial in design["trials"]:
@@ -852,9 +1030,34 @@ def run_task_bank(args, confine=None):
 
     (root / "workspaces").mkdir()
     (root / "logs").mkdir()
-    confinement = getattr(confine, "__qualname__", repr(confine)) if confine is not None else None
+    signal_workspace = None
+    if confine is not None:
+        pi_confine = confine
+        pi_confinement = getattr(confine, "__qualname__", repr(confine))
+    elif unconfined_pi:
+        pi_confine = None
+        pi_confinement = None
+    else:
+        pi_confine = functools.partial(_confine_pi, results_dirs=[str(root), str(out_dir), str(bank)])
+        pi_confinement = "autonomy_lab.confine.confine (LOOP_SPEC §4.2 bubblewrap profile)"
+        signal_workspace = confinement.WORK_DIR
+    grading_confinement = (
+        "autonomy_lab.confine.GradingSandbox (LOOP_SPEC §4.2a bubblewrap grading profile)"
+        if grading is not None
+        else "UNCONFINED (--unconfined-grading-for-tests)"
+    )
+    limitations = [
+        "Confinement is for trusted first-party tasks, not a hardened sandbox; Pi keeps network access.",
+        "confinement_signals are heuristic and need review by hand.",
+        "The grading completion token defeats accidental early exits, not adversarial candidates.",
+        "Token cost is provider-reported and may be unavailable or incomplete.",
+    ]
+    if pi_confine is None:
+        limitations.append("Pi ran UNCONFINED (--unconfined-pi-for-tests): held-out checks were not hidden.")
+    if grading is None:
+        limitations.append("Grading ran UNCONFINED (--unconfined-grading-for-tests): not valid evidence.")
     metadata = {
-        "schema_version": "0.3.0",
+        "schema_version": "0.4.0",
         "backend": "pi-local",
         "mode": "task-bank",
         "model_requested": args.model,
@@ -870,34 +1073,39 @@ def run_task_bank(args, confine=None):
         "task_bank": str(bank),
         "task_bank_sha256": design["task_bank_sha256"],
         "timeout_seconds": args.timeout,
-        "confinement": confinement,
+        "host_auth_min_validity_seconds": args.timeout + AUTH_MARGIN_SECONDS,
+        "confinement": pi_confinement,
+        "grading_confinement": grading_confinement,
         "execution_environment": (
-            "local process using caller's OS permissions; NOT sandboxed"
-            if confine is None
-            else "Pi command wrapped by confinement hook " + str(confinement)
+            "Pi: "
+            + (pi_confinement or "local process using caller's OS permissions; NOT sandboxed")
+            + "; grading: "
+            + grading_confinement
         ),
         "model_calls_issued": True,
         "human_interventions_allowed": 0,
-        "experiment_limitations": [
-            "Held-out checks are not OS-level hidden unless a confinement hook is applied.",
-            "confinement_signals are not yet recorded (empty lists).",
-            "Token cost is provider-reported and may be unavailable or incomplete.",
-        ],
+        "experiment_limitations": limitations,
     }
     (root / "run-metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     trials_by_id = {trial["trial_id"]: trial for trial in design["trials"]}
     records = []
     stop_reason = None
+
+    def attempt(trial_id, number):
+        return _run_bank_trial(
+            root, trials_by_id[trial_id], number, tasks_by_id, design, args, pi_confine, grading, signal_workspace
+        )
+
     for trial_id in design["execution_order"]:
         if task_bank_sha256(bank) != design["task_bank_sha256"]:
             stop_reason = "task bank changed during the run"
             break
-        record = _run_bank_trial(root, trials_by_id[trial_id], 1, tasks_by_id, design, args, confine)
+        record = attempt(trial_id, 1)
         records.append(record)
         if record["infrastructure_failure"] and record["spec_files_intact"]:
             # One rerun with the same seed; both attempts are kept.
-            record = _run_bank_trial(root, trials_by_id[trial_id], 2, tasks_by_id, design, args, confine)
+            record = attempt(trial_id, 2)
             records.append(record)
         if not record["spec_files_intact"]:
             stop_reason = f"{trial_id} changed prompt.txt or visible_checks.py (LOOP_SPEC §8.3 safety stop)"
@@ -930,7 +1138,12 @@ def main():
     parser.add_argument("--verifications", default="basic,rich")
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per trial")
-    parser.add_argument("--out", type=Path, default=Path("autonomy_lab/local-results"))
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="Output directory (2x2x2 default: autonomy_lab/local-results; task-bank default: "
+        "$XDG_STATE_HOME/autonomy-lab or ~/.local/state/autonomy-lab, never inside the repository)",
+    )
     bank = parser.add_argument_group("task-bank mode (LOOP_SPEC §4); the 2x2x2 options above are then ignored")
     bank.add_argument("--task-bank", type=Path, help="Task bank directory; selects task-bank mode")
     bank.add_argument("--experiment", choices=EXPERIMENTS)
@@ -941,13 +1154,29 @@ def main():
     bank.add_argument("--e3-breadths", default="1,2,4")
     bank.add_argument("--e3-trials", help="E3: trials per breadth, one value or one per breadth")
     bank.add_argument("--t7-task", help="T7: task id (default: chosen from the design seed)")
-    bank.add_argument("--confine", help="Confinement hook 'package.module:function' mapping (command, workspace)")
+    bank.add_argument(
+        "--confine",
+        help="Replace the default bubblewrap Pi profile with a hook 'package.module:function'"
+        " mapping (command, workspace)",
+    )
+    bank.add_argument(
+        "--unconfined-pi-for-tests",
+        action="store_true",
+        help="Run Pi without the confinement profile (tests only; held-out checks are then not hidden)",
+    )
+    bank.add_argument(
+        "--unconfined-grading-for-tests",
+        action="store_true",
+        help="Allow grading without the bubblewrap grading sandbox when bwrap is unavailable (tests only)",
+    )
     bank.add_argument("--design-only", action="store_true", help="Write design.json and prompts, run nothing")
     args = parser.parse_args()
     try:
         if args.task_bank is None:
             if args.experiment is not None:
                 raise ValueError("--experiment needs --task-bank")
+            if args.out is None:
+                args.out = Path("autonomy_lab/local-results")
             run_experiment(args)
             return
         root = run_task_bank(args, confine=load_confine(args.confine))

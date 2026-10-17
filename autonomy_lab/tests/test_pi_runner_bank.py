@@ -14,13 +14,20 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from autonomy_lab import confine as confinement
+from autonomy_lab import pi_runner
+from autonomy_lab.confine import HostAuthError, grading_sandbox_or_none
 from autonomy_lab.design import canonical_json, generate_design
-from autonomy_lab.pi_runner import classify_failure, run_task_bank, scan_events
-from autonomy_lab.taskbank import load_bank, task_bank_sha256
+from autonomy_lab.pi_runner import classify_failure, parse_pi_events, run_task_bank, scan_events
+from autonomy_lab.taskbank import GradingError, load_bank, task_bank_sha256
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 VALID_BANK = FIXTURES / "bank_valid"
 INVALID_BANK = FIXTURES / "bank_invalid"
+LAB = Path(__file__).resolve().parents[1]
+# Grading runs in the bubblewrap grading sandbox wherever bwrap works; elsewhere the tests opt out explicitly.
+SANDBOX_AVAILABLE = grading_sandbox_or_none() is not None
+UNCONFINED_GRADING = [] if SANDBOX_AVAILABLE else ["--unconfined-grading-for-tests"]
 ALL_DECISIONS = {
     "lab_slugger": ["lowercase", "separator", "empty", "strip"],
     "lab_ranger": ["order", "bool", "open-bound", "inclusive"],
@@ -58,13 +65,30 @@ if mode == "error_once" and first:
     assistant = dict(assistant, stopReason="error", errorMessage="502 Bad Gateway")
 if mode == "tamper":
     (here / "visible_checks.py").write_text("print('tampered')\\n")
-for event in (
-    {"type": "agent_start"},
-    {"type": "turn_start"},
+if mode == "tamper_on_import":
+    # Correct implementations that rewrite visible_checks.py by absolute path whenever they are imported.
+    for module, decisions in json.loads(os.environ["FAKE_PI_SATISFY"]).items():
+        path = here / (module + ".py")
+        if path.exists():
+            hook = "import pathlib\\ntry:\\n    pathlib.Path(%r).write_text('tampered')\\nexcept OSError:\\n    pass\\n"
+            path.write_text(hook % str(here / "visible_checks.py") + solution(module, decisions))
+if mode == "bad_stop" or (mode == "bad_stop_once" and first):
+    assistant = dict(assistant, stopReason=[])
+events = [{"type": "agent_start"}, {"type": "turn_start"}]
+if mode == "bare_tool" or (mode == "bare_tool_once" and first):
+    events.append({"type": "tool_execution_start"})
+if mode == "escape":
+    events.append({"type": "tool_execution_start", "toolCallId": "c1", "toolName": "bash",
+                   "args": {"command": "cat ../../autonomy_lab/runner.py"}})
+    events.append({"type": "tool_execution_end", "toolCallId": "c1", "toolName": "bash", "isError": True,
+                   "result": {"content": [{"type": "text", "text": "cat: ../../autonomy_lab/runner.py: "
+                                           "No such file or directory"}]}})
+events += [
     {"type": "message_end", "message": assistant},
     {"type": "turn_end"},
     {"type": "agent_settled", "aborted": False},
-):
+]
+for event in events:
     print(json.dumps(event))
 """
 
@@ -108,10 +132,57 @@ class FailureClassificationTests(unittest.TestCase):
         self.assertEqual(self.classify(empty_reply, timed_out=True, idle=200), ("provider_stall", None))
         tool_result = START + [assistant(), {"type": "message_end", "message": {"role": "toolResult"}}]
         self.assertEqual(self.classify(tool_result, timed_out=True, idle=200), ("provider_stall", None))
+        # Pi's wire message_update is a delta without `message` (Pi 1.3.0 docs/json.md).
         streaming = START + [
-            {"type": "message_update", "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}}
+            {
+                "type": "message_update",
+                "usage": {"output": 0},
+                "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "hi"},
+            }
         ]
         self.assertEqual(self.classify(streaming, timed_out=True, idle=200), (None, "timeout"))
+
+    def test_a_real_pi_stream_shape_is_not_malformed(self):
+        # Shapes from Pi 1.3.0 docs/json.md. The previous validator required `message` on message_update, which
+        # Pi's JSON mode never sends, so every streamed trial would have been classified malformed_events.
+        usage = {"input": 100, "output": 1, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 101, "cost": {"total": 0}}
+        final = dict(
+            assistant()["message"], content=[{"type": "text", "text": "done"}], usage=usage, api="x", timestamp=1
+        )
+        stream = [
+            {"type": "session", "version": 3, "id": "uuid", "timestamp": "2024-12-03T14:00:00.000Z", "cwd": "/work"},
+            *START,
+            {"type": "message_start", "message": {"role": "user", "content": "Review this", "timestamp": 1}},
+            {"type": "message_end", "message": {"role": "user", "content": "Review this", "timestamp": 1}},
+            {"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending"}},
+            {
+                "type": "message_update",
+                "usage": usage,
+                "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "Hello"},
+            },
+            {"type": "tool_execution_start", "toolCallId": "call_1", "toolName": "bash", "args": {"command": "ls"}},
+            {
+                "type": "tool_execution_update",
+                "toolCallId": "call_1",
+                "toolName": "bash",
+                "args": {"command": "ls"},
+                "partialResult": {"content": [], "details": {}},
+            },
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_1",
+                "toolName": "bash",
+                "result": {"content": [{"type": "text", "text": "a.py"}], "details": {}},
+                "isError": False,
+            },
+            {"type": "message_end", "message": final},
+            {"type": "turn_end", "message": final, "toolResults": []},
+            {"type": "agent_end", "messages": [final], "willRetry": False},
+            {"type": "auto_retry_start", "attempt": 1, "maxAttempts": 3, "delayMs": 2000, "errorMessage": "529"},
+            {"type": "auto_retry_end", "success": True, "attempt": 2},
+            SETTLED,
+        ]
+        self.assertEqual(self.classify(stream), (None, None))
 
     def test_provider_side_failures(self):
         error = START + [assistant("error", errorMessage="500 Internal Server Error"), SETTLED]
@@ -149,12 +220,32 @@ class FailureClassificationTests(unittest.TestCase):
             {"type": "message_end", "message": {"content": []}},
             {"type": "auto_retry_end"},
             {"type": "agent_settled", "aborted": "no"},
+            # Review finding 6: these were accepted, or crashed parse_pi_events.
+            {"type": "tool_execution_start"},
+            {"type": "tool_execution_start", "toolCallId": "1"},
+            {"type": "tool_execution_start", "toolCallId": 1, "toolName": "bash"},
+            {"type": "tool_execution_end", "toolName": "bash", "isError": False},
+            assistant([]),
+            assistant(5),
+            {"type": "message_end", "message": {"role": "assistant", "provider": "openai", "model": "example"}},
+            {"type": "message_end", "message": dict(assistant()["message"], model=["example"])},
+            {"type": "message_end", "message": dict(assistant()["message"], usage=[1])},
+            {"type": "message_update", "usage": {}},
+            {"type": "message_update", "assistantMessageEvent": {"delta": "x"}},
         ):
             with self.subTest(bad=bad):
                 self.assertEqual(self.classify(OK[:2] + [bad] + OK[2:]), ("malformed_events", None))
                 self.assertEqual(
                     self.classify(OK[:2] + [bad] + OK[2:], timed_out=True, idle=1), ("malformed_events", None)
                 )
+                # Metric extraction validates first: a malformed event is counted, never read or crashed on.
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "pi-events.jsonl"
+                    line = bad if isinstance(bad, str) else json.dumps(bad)
+                    path.write_text(line + "\n", encoding="utf-8")
+                    metrics = parse_pi_events(path)
+                self.assertEqual(metrics["invalid_json_lines"] + metrics["malformed_events"], 1)
+                self.assertEqual(metrics["assistant_messages"], 0)
 
     def test_line_cut_short_by_the_timeout_kill_is_not_malformed(self):
         partial = '{"type": "message_update", "mess'
@@ -188,6 +279,9 @@ def bank_args(tmp, **overrides):
         "e3_trials": None,
         "t7_task": None,
         "design_only": False,
+        # Pi is a fake script here; tests of the default profile patch confine.confine instead.
+        "unconfined_pi_for_tests": True,
+        "unconfined_grading_for_tests": not SANDBOX_AVAILABLE,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -241,11 +335,22 @@ SMALL = {
 
 
 class TaskBankRunTests(unittest.TestCase):
-    def run_bank(self, tmp, env=None, confine=None, **overrides):
+    def run_bank(self, tmp, env=None, confine=None, auth=None, **overrides):
+        """Run the fake-Pi task bank; ``auth`` replaces prepare_host_auth (default: a recorder that succeeds)."""
         log = Path(tmp) / "fake-log.jsonl"
         values = {"FAKE_PI_MODEL": "openai/example", "FAKE_PI_THINKING": "high", "FAKE_PI_LOG": str(log)}
         values.update(env or {})
-        with mock.patch.dict(os.environ, values), contextlib.redirect_stdout(io.StringIO()):
+        self.auth_calls = []
+
+        def record_auth(provider, model, seconds, pi_binary="pi"):
+            self.auth_calls.append((provider, model, seconds))
+            return "15m"
+
+        with (
+            mock.patch.dict(os.environ, values),
+            mock.patch.object(confinement, "prepare_host_auth", side_effect=auth or record_auth),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             root = run_task_bank(bank_args(tmp, **overrides), confine=confine)
         records = [json.loads(line) for line in (root / "trials.jsonl").read_text().splitlines()]
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -363,6 +468,152 @@ class TaskBankRunTests(unittest.TestCase):
                 run_task_bank(bank_args(tmp, task_bank=INVALID_BANK))
             self.assertFalse((Path(tmp) / "out").exists())
 
+    def test_pi_is_confined_by_default_and_the_host_token_is_prepared_before_each_attempt(self):
+        events = []
+
+        def fake_confine(command, workspace, results_dirs=()):
+            events.append(("confine", workspace.name, tuple(results_dirs)))
+            return command, dict(os.environ, FAKE_PI_MARKER="confined")
+
+        def auth(provider, model, seconds, pi_binary="pi"):
+            events.append(("auth", provider, model, seconds))
+            return "15m"
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(confinement, "confine", side_effect=fake_confine):
+            env = {"FAKE_PI_MODE": "error_once", "FAKE_PI_STATE": str(Path(tmp) / "state")}
+            root, records, calls = self.run_bank(tmp, env, auth=auth, unconfined_pi_for_tests=False, **SMALL)
+            metadata = json.loads((root / "run-metadata.json").read_text())
+            out = (Path(tmp) / "out").resolve()
+        self.assertEqual(len(records), 3)  # one rerun after the provider error
+        self.assertEqual([e[0] for e in events], ["auth", "confine"] * 3)
+        for event in events:
+            if event[0] == "auth":
+                self.assertEqual(event[1:], ("openai", "example", 30 + 300))
+            else:
+                self.assertEqual(set(event[2]), {str(root), str(out), str(VALID_BANK.resolve())})
+        self.assertTrue(all(call["marker"] == "confined" for call in calls))
+        self.assertTrue(all(r["pi_confined"] for r in records))
+        self.assertIn("autonomy_lab.confine.confine", metadata["confinement"])
+        self.assertEqual(metadata["host_auth_min_validity_seconds"], 330)
+
+    def test_host_auth_failure_is_an_auth_failure_and_is_rerun(self):
+        attempts = []
+
+        def flaky(provider, model, seconds, pi_binary="pi"):
+            attempts.append(provider)
+            if len(attempts) == 1:
+                raise HostAuthError("cannot prepare the host token for openai/example (5m): token expired")
+            return "5m"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, records, calls = self.run_bank(tmp, auth=flaky, **SMALL)
+            summary = json.loads((root / "summary.json").read_text())
+        self.assertEqual(len(records), 3)
+        self.assertEqual((records[0]["infrastructure_failure"], records[0]["attempt"]), ("auth", 1))
+        self.assertIn("token expired", records[0]["stderr_tail"])
+        self.assertEqual((records[1]["infrastructure_failure"], records[1]["attempt"]), (None, 2))
+        self.assertEqual(len(calls), 2)  # Pi never started for the failed attempt
+        self.assertEqual(summary["infrastructure_failures_first_attempt"], {"auth": 1})
+
+    def test_a_profile_that_fails_to_start_is_a_sandbox_failure(self):
+        def broken_profile(command, workspace):
+            script = "import sys\nsys.stderr.write('bwrap: Creating new namespace failed: EPERM\\n')\nsys.exit(1)\n"
+            return [sys.executable, "-c", script], dict(os.environ)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _, records, _ = self.run_bank(tmp, confine=broken_profile, **SMALL)
+        self.assertEqual(len(records), 4)
+        self.assertEqual({r["infrastructure_failure"] for r in records}, {"sandbox"})
+
+    def test_a_grading_sandbox_failure_is_a_sandbox_failure(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(pi_runner, "grade_modules", side_effect=GradingError("bwrap: cannot mount")),
+        ):
+            _, records, _ = self.run_bank(tmp, {"FAKE_PI_SATISFY": json.dumps(ALL_DECISIONS)}, **SMALL)
+        self.assertEqual({r["infrastructure_failure"] for r in records}, {"sandbox"})
+        self.assertFalse(any(r["accepted"] for r in records))
+
+    def test_confinement_signals_are_recorded_from_the_event_stream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, records, _ = self.run_bank(tmp, {"FAKE_PI_MODE": "escape"}, **SMALL)
+            summary = json.loads((root / "summary.json").read_text())
+        kinds = {signal["kind"] for signal in records[0]["confinement_signals"]}
+        self.assertIn("parent_relative_path", kinds)
+        self.assertEqual(summary["attempts_with_confinement_signals"], 2)
+
+    def test_malformed_events_are_an_infrastructure_failure_not_a_crash(self):
+        for mode in ("bare_tool_once", "bad_stop_once"):
+            with tempfile.TemporaryDirectory() as tmp, self.subTest(mode=mode):
+                env = {"FAKE_PI_MODE": mode, "FAKE_PI_STATE": str(Path(tmp) / "state")}
+                env["FAKE_PI_SATISFY"] = json.dumps(ALL_DECISIONS)
+                _, records, _ = self.run_bank(tmp, env, **SMALL)
+                self.assertEqual(len(records), 3)
+                self.assertEqual(records[0]["infrastructure_failure"], "malformed_events")
+                self.assertTrue(records[0]["malformed_events"])
+                self.assertFalse(records[0]["accepted"])
+                self.assertFalse(records[0]["runtime_matches_request"])
+                self.assertEqual(records[1]["infrastructure_failure"], None)
+                self.assertTrue(records[1]["accepted"])
+
+    def test_tampering_during_grading_is_a_safety_stop(self):
+        # Review finding 5: correct implementations that rewrote visible_checks.py when imported were accepted with
+        # spec_files_intact=true. Unconfined, the post-grading hash catches the rewrite.
+        env = {"FAKE_PI_MODE": "tamper_on_import", "FAKE_PI_SATISFY": json.dumps(ALL_DECISIONS)}
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(pi_runner, "default_grading_sandbox", return_value=None),
+        ):
+            root, records, _ = self.run_bank(tmp, env, **SMALL)
+            summary = json.loads((root / "summary.json").read_text())
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertTrue(record["spec_files_intact_after_agent"])
+        self.assertFalse(record["spec_files_intact_after_grading"])
+        self.assertFalse(record["spec_files_intact"])
+        self.assertFalse(record["accepted"])
+        self.assertFalse(record["grading_confined"])
+        self.assertIn("safety stop", summary["stop_reason"])
+
+    @unittest.skipUnless(SANDBOX_AVAILABLE, "bwrap unavailable")
+    def test_the_grading_sandbox_prevents_tampering_during_grading(self):
+        env = {"FAKE_PI_MODE": "tamper_on_import", "FAKE_PI_SATISFY": json.dumps(ALL_DECISIONS)}
+        with tempfile.TemporaryDirectory() as tmp:
+            root, records, _ = self.run_bank(tmp, env, **SMALL)
+            summary = json.loads((root / "summary.json").read_text())
+            checks = [p.read_text() for p in (root / "workspaces").glob("*/visible_checks.py")]
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(r["spec_files_intact"] and r["accepted"] and r["grading_confined"] for r in records))
+        self.assertNotIn("tampered", "".join(checks))
+        self.assertIsNone(summary["stop_reason"])
+
+    def test_grading_is_refused_unconfined_without_the_explicit_flag(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch("autonomy_lab.taskbank.bwrap_unavailable_reason", return_value="bwrap is not installed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "refusing to run agent-written code unconfined"):
+                run_task_bank(bank_args(tmp, unconfined_grading_for_tests=False))
+            self.assertFalse((Path(tmp) / "out").exists())
+            # With the flag, the run proceeds unconfined and says so.
+            root, records, _ = self.run_bank(tmp, unconfined_grading_for_tests=True, **SMALL)
+            metadata = json.loads((root / "run-metadata.json").read_text())
+        self.assertFalse(any(r["grading_confined"] for r in records))
+        self.assertIn("UNCONFINED", metadata["grading_confinement"])
+
+    def test_output_directory_defaults_outside_the_repository_and_refuses_one_inside(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for inside in (LAB / "local-results", LAB.parent, LAB / "tests"):
+                with self.subTest(out=inside), self.assertRaisesRegex(ValueError, "overlaps the repository"):
+                    run_task_bank(bank_args(tmp, out=inside, design_only=True))
+            with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(tmp) / "state")}):
+                self.assertEqual(pi_runner.default_out_dir(), Path(tmp) / "state" / "autonomy-lab")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    root = run_task_bank(bank_args(tmp, out=None, design_only=True))
+            self.assertEqual(root.parent, (Path(tmp) / "state" / "autonomy-lab").resolve())
+        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": ""}):
+            self.assertEqual(pi_runner.default_out_dir(), Path.home() / ".local" / "state" / "autonomy-lab")
+
 
 class TaskBankCliTests(unittest.TestCase):
     def design_only(self, out, seed):
@@ -385,6 +636,7 @@ class TaskBankCliTests(unittest.TestCase):
             "--design-only",
             "--out",
             str(out),
+            *UNCONFINED_GRADING,
         ]
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

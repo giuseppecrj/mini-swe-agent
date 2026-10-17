@@ -99,7 +99,7 @@ class PiAdapterTests(unittest.TestCase):
             {"type": "session", "cwd": "/test"},
             {"type": "turn_end"},
             {"type": "tool_execution_start", "toolCallId": "t1", "toolName": "bash"},
-            {"type": "tool_execution_end", "toolCallId": "t1", "isError": False},
+            {"type": "tool_execution_end", "toolCallId": "t1", "toolName": "bash", "isError": False},
             {
                 "type": "message_end",
                 "message": {
@@ -127,6 +127,7 @@ class PiAdapterTests(unittest.TestCase):
         self.assertEqual(metrics["reported_cost_usd"], 0.0123)
         self.assertEqual(metrics["model_ids"], ["openai/example"])
         self.assertEqual(metrics["thinking_levels"], ["high"])
+        self.assertEqual(metrics["malformed_events"], 0)
 
     def test_detects_aborted_agent_even_with_events(self):
         with tempfile.TemporaryDirectory() as tmp:

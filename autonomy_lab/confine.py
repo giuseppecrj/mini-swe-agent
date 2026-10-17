@@ -32,6 +32,10 @@ before each trial to make the host token valid for at least the trial's duration
 
 This is confinement for trusted first-party tasks, not a hardened sandbox: the agent can read its own provider
 credentials and the rest of the read-only host filesystem.
+
+:class:`GradingSandbox` is the stricter grading profile (LOOP_SPEC.md §4.2a) for held-out and visible checks, which
+run agent-written code: no network, no credentials, an empty read-only ``$HOME``, and only the check's own directory
+writable. ``selftest`` runs the probes of both profiles.
 """
 
 import argparse
@@ -232,6 +236,16 @@ def sandbox_setup_failed(exit_code, stderr_text):
 
 def _is_within(path, parent):
     return path == parent or path.startswith(parent.rstrip("/") + "/")
+
+
+def overlaps(path, other):
+    """True when one of two absolute path strings or Paths equals or contains the other."""
+    return _is_within(str(path), str(other)) or _is_within(str(other), str(path))
+
+
+def repository_trees():
+    """Every checkout and Git directory of the repository holding this harness (its worktrees included)."""
+    return sorted(_git_paths(Path(__file__).resolve().parent))
 
 
 def _git_paths(start):
@@ -1097,6 +1111,127 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
             shutil.rmtree(path, ignore_errors=True)
 
 
+# Run as a grading check under the grading profile. Each probe reports whether it succeeded; nothing is printed
+# from any file it reads.
+GRADING_PROBE = r"""
+import json, os, socket, sys
+cfg = json.loads(sys.argv[1])
+results = {}
+def probe(name, fn):
+    try:
+        fn()
+        results[name] = {"succeeded": True, "error": ""}
+    except Exception as exc:
+        results[name] = {"succeeded": False, "error": type(exc).__name__ + ": " + str(exc)[:160]}
+def read(path):
+    with open(path, "rb") as handle:
+        handle.read(1)
+def write(path):
+    with open(path, "w") as handle:
+        handle.write("x")
+def nonempty(path):
+    if not os.listdir(path):
+        raise OSError("empty")
+def tcp():
+    socket.create_connection(("127.0.0.1", cfg["tcp_port"]), timeout=5).close()
+def abstract():
+    handle = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        handle.connect(b"\x00" + cfg["abstract_socket"].encode())
+    finally:
+        handle.close()
+def clean_fds():
+    targets = {}
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            targets[name] = os.readlink("/proc/self/fd/" + name)
+        except OSError:
+            continue  # the descriptor listdir itself used, already closed
+    extra = sorted(n for n, t in targets.items() if n not in ("0", "1", "2") and not t.endswith("/fd"))
+    if extra:
+        raise OSError("inherited descriptors: " + ", ".join(n + " -> " + targets[n] for n in extra))
+probe("read_repository", lambda: read(cfg["runner"]))
+probe("read_results_dir", lambda: read(cfg["results_secret"]))
+probe("list_sessions", lambda: os.listdir(cfg["sessions"]))
+probe("home_not_empty", lambda: nonempty(os.environ["HOME"]))
+probe("write_etc", lambda: write("/etc/grading-probe"))
+probe("write_tmp", lambda: write("/tmp/grading-probe"))
+probe("write_home", lambda: write(os.environ["HOME"] + "/grading-probe"))
+probe("write_dev_shm", lambda: write("/dev/shm/grading-probe"))
+probe("outbound_tcp", tcp)
+probe("connect_host_abstract_socket", abstract)
+probe("write_own_directory", lambda: write("own-output.txt"))
+probe("read_task_module", lambda: read("probe_module.py"))
+probe("clean_fd_table", clean_fds)
+results["cwd"] = os.getcwd()
+print(json.dumps(results))
+"""
+GRADING_MUST_FAIL = (
+    "read_repository",
+    "read_results_dir",
+    "list_sessions",
+    "home_not_empty",
+    "write_etc",
+    "write_tmp",
+    "write_home",
+    "write_dev_shm",
+    "outbound_tcp",
+    "connect_host_abstract_socket",
+)
+GRADING_MUST_SUCCEED = ("write_own_directory", "read_task_module", "clean_fd_table")
+
+
+def run_grading_selftest():
+    """Run a probe as a grading check under :class:`GradingSandbox` and return (ok, report).
+
+    ok means the probe could not reach the repository, a results directory, the Pi sessions, the network or a host
+    abstract socket, could not write anywhere but its own directory, saw an empty ``$HOME``, and could still read
+    its task module and write its own directory.
+    """
+    listeners = []
+    auth_base = Path.home() / ".cache" / "autonomy-lab"
+    auth_base.mkdir(parents=True, exist_ok=True)
+    results = Path(tempfile.mkdtemp(prefix="grading-selftest-results-", dir=auth_base))
+    check_dir = Path(tempfile.mkdtemp(prefix="grading-selftest-check-"))
+    try:
+        (results / "secret.txt").write_text("held-out", encoding="utf-8")
+        (check_dir / "probe_module.py").write_text("x = 1\n", encoding="utf-8")
+        abstract_name = "grading-selftest-" + os.urandom(8).hex()
+        abstract = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        abstract.bind(b"\x00" + abstract_name.encode())
+        abstract.listen(2)
+        listeners.append(abstract)
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.bind(("127.0.0.1", 0))
+        tcp.listen(2)
+        listeners.append(tcp)
+        cfg = {
+            "runner": str(Path(__file__).resolve().parent / "runner.py"),
+            "results_secret": str(results / "secret.txt"),
+            "sessions": str(Path.home() / ".pi" / "agent" / "sessions"),
+            "tcp_port": tcp.getsockname()[1],
+            "abstract_socket": abstract_name,
+        }
+        sandbox = GradingSandbox(results_dirs=[str(results)])
+        command, env = sandbox.wrap([sandbox.interpreter, "-I", "-c", GRADING_PROBE, json.dumps(cfg)], check_dir)
+        done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=60)
+        try:
+            probes = json.loads(done.stdout.strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            return False, {"error": "grading probe produced no report", "exit": done.returncode, "stderr": done.stderr}
+        checks = {name: not probes[name]["succeeded"] for name in GRADING_MUST_FAIL}
+        checks.update({name: probes[name]["succeeded"] for name in GRADING_MUST_SUCCEED})
+        checks["cwd_is_work"] = probes["cwd"] == WORK_DIR
+        checks["own_write_visible_on_host"] = (check_dir / "own-output.txt").is_file()
+        report = {"checks": checks, "probes": {k: v for k, v in probes.items() if isinstance(v, dict)}}
+        return all(checks.values()), report
+    finally:
+        for listener in listeners:
+            listener.close()
+        shutil.rmtree(results, ignore_errors=True)
+        shutil.rmtree(check_dir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bubblewrap confinement for benchmark Pi processes.")
     sub = parser.add_subparsers(dest="action", required=True)
@@ -1117,6 +1252,14 @@ def main():
         print(("PASS " if passed else "FAIL ") + name)
     if "error" in report:
         print("FAIL " + json.dumps(report))
+    if not args.control:
+        # The grading profile (LOOP_SPEC §4.2a) has no unconfined control: its probes are the same escapes.
+        grading_ok, grading_report = run_grading_selftest()
+        for name, passed in grading_report.get("checks", {}).items():
+            print(("PASS " if passed else "FAIL ") + "grading_" + name)
+        if "error" in grading_report:
+            print("FAIL " + json.dumps(grading_report))
+        ok = ok and grading_ok
     print(("control" if args.control else "selftest") + " " + ("passed" if ok else "FAILED"))
     return 0 if ok else 1
 

@@ -23,18 +23,21 @@ from autonomy_lab import confine as confine_module
 from autonomy_lab.confine import (
     AGENT_DIR,
     AUDIT_ARCH_X86_64,
+    GRADING_HOME,
     SECCOMP_FD,
     SECCOMP_RET_ALLOW,
     SECCOMP_RET_ERRNO,
     SECCOMP_RET_KILL_PROCESS,
     WORK_DIR,
     ConfinementError,
+    GradingSandbox,
     HostAuthError,
     bwrap_unavailable_reason,
     classify_path,
     confine,
     normalise_path,
     prepare_host_auth,
+    run_grading_selftest,
     run_selftest,
     sandbox_setup_failed,
     scan_confinement_signals,
@@ -311,6 +314,78 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(sandbox_setup_failed(done.returncode, done.stderr))
 
 
+class GradingProfileTests(unittest.TestCase):
+    """The grading profile's command line (LOOP_SPEC §4.2a), checked without running bwrap."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name).resolve()
+        self.check_dir = root / "check"
+        self.check_dir.mkdir()
+        self.results = root / "results"
+        self.results.mkdir()
+        patcher = mock.patch.object(confine_module.shutil, "which", side_effect=fake_which)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        with mock.patch.object(confine_module, "FRESH_MOUNTS", ("/run",)):
+            self.sandbox = GradingSandbox(results_dirs=[str(self.results)])
+
+    def wrap(self):
+        return self.sandbox.wrap([self.sandbox.interpreter, "-I", "-c", "pass"], self.check_dir)
+
+    def test_no_network_no_credentials_and_only_the_check_directory_is_writable(self):
+        command, env = self.wrap()
+        command = bwrap_argv(command)
+        options = command[: command.index("--")]
+        self.assertIn("--unshare-all", options)
+        self.assertNotIn("--share-net", options)
+        self.assertEqual(pairs(command, "--bind"), [(str(self.check_dir), WORK_DIR)])
+        self.assertFalse([d for _, d in pairs(command, "--ro-bind") if d.startswith(AGENT_DIR)])
+        self.assertNotIn("PI_CODING_AGENT_DIR", env)
+        self.assertEqual(env["HOME"], GRADING_HOME)
+        self.assertEqual(env["TMPDIR"], WORK_DIR)
+        # Every tmpfs the profile mounts is remounted read-only, after the check directory is bound.
+        remounted = operands(command, "--remount-ro")
+        for path in ("/", GRADING_HOME, "/dev", *operands(command, "--tmpfs")):
+            self.assertIn(path, remounted)
+        self.assertGreater(command.index("--remount-ro"), command.index(WORK_DIR))
+        for flag in ("--die-with-parent", "--new-session", "--clearenv", "--disable-userns"):
+            self.assertIn(flag, options)
+        self.assertEqual(operands(command, "--seccomp"), [str(SECCOMP_FD)])
+
+    def test_repository_home_sessions_and_results_are_hidden(self):
+        command, _ = self.wrap()
+        tmpfs = operands(bwrap_argv(command), "--tmpfs")
+        covered = lambda path: any(  # noqa: E731
+            str(path) == t or str(path).startswith(t.rstrip("/") + "/") for t in tmpfs
+        )
+        for path in (Path.home(), LAB.parent, LAB / "runner.py", self.results):
+            self.assertTrue(covered(path), path)
+
+    def test_it_is_launched_through_the_descriptor_closing_shim(self):
+        command, _ = self.wrap()
+        self.assertEqual(command[:3], [sys.executable, "-I", "-c"])
+        self.assertEqual(command[3], confine_module.EXEC_SHIM)
+
+    def test_only_its_own_interpreter_and_unprotected_check_directories_are_accepted(self):
+        with self.assertRaisesRegex(ConfinementError, "only runs its own interpreter"):
+            self.sandbox.wrap(["/bin/sh", "-c", "true"], self.check_dir)
+        inside = self.results / "check"
+        inside.mkdir()
+        with self.assertRaisesRegex(ConfinementError, "overlaps the protected path"):
+            self.sandbox.wrap([self.sandbox.interpreter], inside)
+        with self.assertRaisesRegex(ConfinementError, "not a directory"):
+            self.sandbox.wrap([self.sandbox.interpreter], self.check_dir / "missing")
+
+    def test_an_interpreter_inside_the_repository_is_refused(self):
+        # A (hypothetical) interpreter whose installation lies in the checkout would re-expose the repository.
+        inside = LAB / "tests" / "fixtures" / "bin" / "python3"
+        with mock.patch.object(confine_module.os, "access", return_value=True):
+            with self.assertRaisesRegex(ConfinementError, "the grading interpreter .* overlaps the protected path"):
+                GradingSandbox(interpreter=str(inside))
+
+
 class HostAuthTests(unittest.TestCase):
     """prepare_host_auth keeps the host token valid for a whole trial without ever capturing it."""
 
@@ -412,6 +487,13 @@ class BwrapTests(unittest.TestCase):
             "auth_unchanged_on_host",
         ):
             self.assertIn(name, report["checks"])
+
+    def test_grading_profile_probes_cannot_escape(self):
+        ok, report = run_grading_selftest()
+        failed = {name: report["probes"].get(name) for name, passed in report.get("checks", {}).items() if not passed}
+        self.assertTrue(ok, json.dumps(failed or report, indent=2))
+        self.assertIn("outbound_tcp", report["checks"])
+        self.assertIn("read_results_dir", report["checks"])
 
     def test_same_probes_succeed_without_the_profile(self):
         # Shows the probes would notice a missing profile. Probes that depend on the user's Pi state are excluded.
