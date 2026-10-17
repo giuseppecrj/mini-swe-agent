@@ -4,13 +4,15 @@ def _check_per_page(per_page):
 
 
 def page_count(total, per_page):
-    """Return how many pages are needed to show `total` items, `per_page` at a time."""
+    """Return the number of pages for `total` items shown `per_page` at a time."""
     _check_per_page(per_page)
-    return max(1, total // per_page)
+    if total < 0:
+        raise ValueError("total must not be negative")
+    return total // per_page
 
 
 def get_page(items, page, per_page):
-    """Return, as a list, the items shown on page number `page`."""
+    """Return the items shown on page number `page`."""
     _check_per_page(per_page)
     if page < 1:
         raise ValueError("page numbers start at 1")

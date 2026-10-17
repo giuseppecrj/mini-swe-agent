@@ -1,0 +1,20 @@
+def meeting_starts(busy, day_start, day_end, length, step=15):
+    """Return candidate start times for a meeting of `length` minutes.
+
+    All times are whole minutes after midnight. `busy` is a list of
+    (start, end) pairs, and the working day runs from day_start to day_end.
+    """
+    if length <= 0:
+        raise ValueError("length must be positive")
+    if day_end <= day_start:
+        raise ValueError("day_end must be after day_start")
+    if step <= 0:
+        raise ValueError("step must be positive")
+    busy = [(min(b_start, b_end), max(b_start, b_end)) for b_start, b_end in busy]
+    starts = []
+    t = day_start
+    while t + length <= day_end:
+        if all(t + length <= b_start or t >= b_end for b_start, b_end in busy):
+            starts.append(t)
+        t += step
+    return starts

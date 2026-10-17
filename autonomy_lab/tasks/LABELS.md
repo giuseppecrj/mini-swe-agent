@@ -1,4 +1,4 @@
-# Proposed decision labels (coordinator draft, for G2 approval)
+# Proposed decision labels (coordinator draft, revised after the T4 audit, for G2 approval)
 
 Approve, change or reject each label **before seeing any agent results**
 (D3, §3.3). The labels mean:
@@ -6,68 +6,103 @@ Approve, change or reject each label **before seeing any agent results**
 - **inferable**: a competent engineer with only the brief, the starter and
   normal conventions would pick the graded behaviour with more than 80%
   confidence.
-- **arbitrary**: at least two other reasonable behaviours exist. Each line
-  below lists them.
+- **arbitrary**: at least two other reasonable behaviours exist. Each one is
+  implemented as a mutant: `<decision>` is `mutants/<decision>.py`, and
+  `<decision>--<alt>` is `mutants/<decision>--<alt>.py` (§4.1).
 - **preserve**: the starter already does this correctly, and it must not
   break.
 
-"Starter" in a reason is the task's `starter.py`. Every coordinator starter
-passes exactly its `preserve` checks and fails every other check. Lines marked
-**borderline** are the ones most worth a second look.
+"Starter" in a reason is the task's `starter.py`. Each coordinator starter
+passes exactly its `preserve` checks and fails every other held-out check.
+Lines marked **borderline** are the ones most worth a second look.
 
-Totals for the 9 tasks and 51 decisions: 33 arbitrary, 10 inferable and
-8 preserve.
+Totals for the 9 coordinator tasks and 49 decisions: 29 arbitrary, 11
+inferable and 9 preserve, with 85 mutants.
 
-| Task | Decision | Label | Reason (alternatives for arbitrary) |
+## What changed after the audit
+
+- `order-status` was replaced by `option-string`. A finite transition table
+  leaves one meaningful input per decision, so visible and held-out checks
+  could not use different inputs.
+- An arbitrary decision now needs at least two natural alternatives. Choices
+  with only one alternative were merged, narrowed or dropped, and no check
+  depends on a dropped choice. The dropped choices are listed under each task
+  below. An agent may decide them either way without affecting any grade.
+- Behaviour that every check relies on, but that is no decision, is stated in
+  the starter's docstring as a fixed prerequisite. For example, split shares
+  add up to the total, ports come back sorted, and an expired cache entry
+  reads like a missing one.
+
+## Labels
+
+| Task | Decision | Label | Reason, then the graded behaviour and each alternative with its mutant |
 |---|---|---|---|
-| bill-split | exact-total | inferable | Money splits that do not add back up to the bill are wrong by any convention. The starter's per-share `round()` gains or loses cents. |
-| bill-split | largest-remainder | arbitrary | Graded: leftover cents go to the largest fractional parts. Alternatives: the first parties in the list, the last parties, the largest weights, or one party takes the whole remainder. |
-| bill-split | ties-to-earlier | arbitrary | Graded: tied fractional parts favour earlier parties. Alternatives: later parties, the larger weight, or a rotating order. |
-| bill-split | zero-weight-share | preserve | The starter already gives weight-0 parties 0. A rewrite might reject zero weights instead. |
-| bill-split | invalid-weights | arbitrary | Graded: `ValueError` for an empty list, a negative weight, or all-zero weights. Alternatives: `ZeroDivisionError` (the starter's behaviour), return `[]` for an empty list, or accept negative weights as offsets. |
-| bill-split | negative-total | arbitrary | Graded: `ValueError`. Alternatives: split a refund symmetrically (negate the positive split), or apply floor arithmetic to negatives as the starter does. |
-| duration-parse | combined-units | preserve | The starter's `findall` already sums multi-unit strings such as "1h30m". |
-| duration-parse | invalid-text | inferable | A parser that returns 0 for "soon" or "" hides errors. `ValueError` is the Python convention for unparseable text. |
-| duration-parse | bare-number-seconds | arbitrary | Graded: "90" means 90 seconds. Alternatives: `ValueError` because the unit is required (Go's rule), or minutes. |
-| duration-parse | case-insensitive-units | arbitrary | Graded: "2H" equals "2h". Alternatives: reject uppercase. "M" could also mean months, so rejecting is equally defensible. |
-| duration-parse | canonical-order | arbitrary | Graded: units must appear in d, h, m, s order, each at most once; anything else raises `ValueError`. Alternatives: accept any order and sum it (the starter's behaviour), or let a repeated unit add up or override. |
-| duration-parse | whole-numbers-only | arbitrary | Graded: "1.5h" raises `ValueError`. Alternatives: accept it as 5400 s, or round or truncate fractional seconds. |
-| expiring-cache | missing-key-default | preserve | The starter's `get` already returns `default` for an unknown key. A rewrite might raise `KeyError` or ignore `default`. |
-| expiring-cache | expiry-boundary | arbitrary | Graded: expired once `now >= t + ttl`. Alternative: still valid at exactly `t + ttl`, as the starter's `>` comparison does. |
-| expiring-cache | fixed-lifetime | arbitrary | Graded: a read does not extend lifetime. Alternative: sliding expiry, where a read refreshes the entry, as the starter does. Both are standard cache designs. |
-| expiring-cache | eviction-order | arbitrary | Graded: evict the entry whose most recent put is oldest; reads do not protect an entry. Alternatives: LRU, where reads count; FIFO by first insertion (the starter's dict order); evict the soonest-expiring entry; or refuse the new key. |
-| expiring-cache | update-does-not-evict | inferable | Replacing an existing key in a full cache should not throw out an unrelated key. The starter's capacity check runs before its existence check, which is a plain bug. |
-| expiring-cache | invalid-settings | arbitrary | Graded: `ValueError` for capacity < 1 or ttl <= 0. Alternatives: capacity 0 means caching is disabled (as with `functools.lru_cache(maxsize=0)`), or accept and misbehave as the starter does. |
-| histogram-bins | one-count-per-bin | preserve | The starter already returns `len(edges) - 1` counts, including zeros and the empty-input case. |
-| histogram-bins | uneven-bins | inferable | The caller passes explicit edges, so bins must follow them. The starter's assumption of equal widths is clearly a bug. |
-| histogram-bins | lower-edge-inclusive | arbitrary | Graded: bins are `[low, high)`, so an edge value goes to the right-hand bin. Alternatives: `(low, high]` bins, or exclude boundary values as the starter's strict comparison does. |
-| histogram-bins | last-edge-included | arbitrary | Graded: a value equal to the final edge is counted in the last bin (numpy's convention). Alternatives: treat it as out of range so every bin is half-open, or drop it as the starter does. |
-| histogram-bins | out-of-range-raises | arbitrary | Graded: `ValueError`. Alternatives: silently ignore the value (the starter's behaviour), clamp it into the end bins, or count it in underflow and overflow totals. |
-| meeting-starts | avoids-busy | preserve | The starter already lists every fitting start that overlaps no busy interval, in ascending order, for any order of busy intervals. |
-| meeting-starts | clock-aligned-starts | arbitrary | Graded: starts are multiples of `step` from midnight, e.g. 9:05 rounds up to 9:15. Alternative: `day_start` plus multiples of `step` (the starter's behaviour). |
-| meeting-starts | half-open-intervals | inferable | Back-to-back meetings, and meetings that end exactly at the end of the working day, are normal calendar behaviour. The starter's strict comparisons are a bug. |
-| meeting-starts | invalid-busy-interval | arbitrary | Graded: `ValueError` when end <= start. Alternatives: ignore the interval (the starter's behaviour), swap its ends, or treat a zero-length interval as harmless. |
-| meeting-starts | positive-length | arbitrary | Graded: `ValueError` for length <= 0. Alternatives: return `[]`, or treat zero length as a valid instant (the starter returns every step). |
-| order-status | forward-path | preserve | The starter's table already handles pay, ship and deliver along the main path. |
-| order-status | illegal-event-raises | arbitrary | Graded: `ValueError`. Alternatives: `KeyError` (the starter's behaviour), return the status unchanged, return `None`, or raise a custom exception. |
-| order-status | repeat-is-noop | arbitrary | Graded: repeating the event that produced the current status (e.g. pay on paid) returns the status unchanged. Alternative: treat it as an illegal transition and raise. |
-| order-status | cancel-until-shipped | arbitrary | Graded: cancel is allowed while paid but not once shipped. Alternatives: only while pending (the starter's table), or until delivered. |
-| order-status | refund-after-delivery | inferable | **Borderline.** The starter lists `refund` and `refunded` with no transition into them, and delivered → refunded is the obvious missing edge. An engineer might add other refund sources too; the check does not penalise that. The risk is that an engineer does not notice the gap at all, which would make the confidence below 80%. |
-| pagination | past-end-is-empty | preserve | The starter's slicing already returns `[]` past the last page. A rewrite might raise or clamp instead. |
-| pagination | one-based-pages | arbitrary | Graded: page 1 is the first page. Alternative: 0-based, which is the starter's behaviour and Python's indexing convention. Both are common in APIs. |
-| pagination | page-below-one | arbitrary | Graded: `ValueError` for a page below 1. Alternatives: return `[]`, or clamp to page 1. |
-| pagination | count-rounds-up | inferable | A final, partly filled page is still a page. Ceiling division is the universal convention. |
-| pagination | empty-is-one-page | arbitrary | Graded: `page_count(0, n) == 1`. Alternative: 0 pages. Both are widespread in UI libraries. |
-| pagination | per-page-positive | arbitrary | Graded: `ValueError` from both functions. Alternatives: `ZeroDivisionError` (the starter's behaviour), treat it as "everything on one page", or fall back to a default page size. |
-| port-spec | malformed-raises | preserve | The starter's `int()` and tuple unpacking already raise `ValueError` for "http", "80-" and "1-2-3". |
-| port-spec | inclusive-ranges | inferable | "8000-8002" means three ports in firewall and configuration conventions. The starter's `range(low, high)` is an off-by-one bug. |
-| port-spec | sorted-unique | arbitrary | Graded: ascending order with duplicates removed. Alternatives: keep input order, keep duplicates, or raise on duplicates. |
-| port-spec | backwards-range | arbitrary | Graded: `ValueError` for "10-5". Alternatives: swap the ends, or return no ports (the starter's behaviour). |
-| port-spec | port-bounds | arbitrary | Graded: only 1–65535 are valid. Alternatives: allow 0 (often "any port"), or no range check (the starter's behaviour). The check includes 0, so it is not only the obvious 65536 case. |
-| port-spec | empty-spec | arbitrary | Graded: "" or whitespace gives `[]`. Alternative: `ValueError` (the starter crashes with one). |
-| table-render | header-sets-width | inferable | A table whose long header pushes the separators out of line is visibly broken. The starter sizes columns from the cells only. |
-| table-render | empty-rows | inferable | **Borderline.** With no rows, the table is the header and separator lines (the starter crashes). Returning `""` or raising is possible but less likely. |
-| table-render | numbers-right-aligned | arbitrary | Graded: int and float cells are right-aligned. Alternative: left-align everything, as the starter does. |
-| table-render | none-is-blank | arbitrary | Graded: `None` renders as an empty cell. Alternatives: "None" (the starter, via `str()`), "-", or "null". |
-| table-render | no-trailing-spaces | arbitrary | Graded: strip trailing padding from every line. Alternative: keep every line padded to the full width (the starter's rectangular output). |
-| table-render | ragged-rows | arbitrary | Graded: `ValueError` for rows with too many or too few cells. Alternatives: pad short rows, drop extra cells (the starter's `zip`), or `IndexError`. |
+| bill-split | leftover-order | arbitrary | Graded: leftover cents go to the largest fractional parts, ties to the earlier party. Alternatives: the first parties in list order (`leftover-order`); the largest weights (`leftover-order--largest-weight`); largest fractional parts with ties to the later party (`leftover-order--ties-to-later`). The earlier "largest-remainder" and "ties-to-earlier" decisions were merged because the tie rule only exists under the largest-remainder policy. |
+| bill-split | exact-arithmetic | inferable | **Borderline.** Integer cents with float arithmetic lose cents above 2**53, and money code conventionally avoids floats. Alternative: float division (`exact-arithmetic`, the starter's approach). |
+| bill-split | zero-weight-share | preserve | The starter already gives weight-0 parties 0. A rewrite might reject zero weights (`zero-weight-share`). |
+| bill-split | all-zero-weights | arbitrary | Graded: `ValueError`. Alternatives: let `ZeroDivisionError` escape, as the starter does (`all-zero-weights`); treat all-zero weights as equal weights (`all-zero-weights--equal-split`). |
+| bill-split | negative-total | arbitrary | Graded: `ValueError`. Alternatives: split a refund symmetrically by negating the split of its absolute value (`negative-total`); apply the same floor arithmetic to negative totals (`negative-total--floor`). |
+| duration-parse | combined-units | preserve | The starter's `findall` already sums multi-unit strings such as "1h30m". A rewrite might keep only the first component (`combined-units`). |
+| duration-parse | invalid-text | inferable | A parser that returns 0 for "soon" or ignores trailing junk hides errors. `ValueError` is the Python convention. Alternative: sum whatever components are found (`invalid-text`, the starter's behaviour). |
+| duration-parse | bare-number-seconds | arbitrary | Graded: "90" means 90 seconds. Alternatives: the unit is required, so `ValueError` (`bare-number-seconds`, Go's rule); a bare number means minutes (`bare-number-seconds--minutes`). |
+| duration-parse | repeated-unit | arbitrary | Graded: "1h1h" raises `ValueError`. Alternatives: repeated units add up, as in the starter (`repeated-unit`); the last one wins (`repeated-unit--last-wins`). |
+| duration-parse | blank-text | arbitrary | Graded: "" or whitespace returns `None`, meaning no duration. Alternatives: 0 seconds, as in the starter (`blank-text`); `ValueError` (`blank-text--raises`). |
+| expiring-cache | lifetime-origin | arbitrary | Graded: lifetime counts from the latest put, and reads do not refresh it. Alternatives: sliding expiry, where reads refresh it, as in the starter (`lifetime-origin`); lifetime counts from the first put and re-puts keep it, like Redis `KEEPTTL` (`lifetime-origin--first-put`). The starter docstring no longer says "after they are stored". |
+| expiring-cache | eviction-order | arbitrary | Graded: evict the entry whose latest put is oldest, so reads do not protect it. Alternatives: LRU, where reads count (`eviction-order`); FIFO by first insertion, where re-puts keep their place, as in the starter (`eviction-order--first-insertion`). |
+| expiring-cache | update-does-not-evict | inferable | Replacing an existing key in a full cache should not evict an unrelated key. The starter checks capacity before existence, which is a plain bug (`update-does-not-evict`). |
+| expiring-cache | capacity-at-least-one | arbitrary | Graded: `ValueError` for capacity < 1. Alternatives: capacity 0 disables caching, like `functools.lru_cache(maxsize=0)` (`capacity-at-least-one`); capacity 0 means unlimited (`capacity-at-least-one--unlimited`). |
+| expiring-cache | lifetime-positive | arbitrary | Graded: `ValueError` for lifetime <= 0. Alternatives: no check, so entries expire immediately (`lifetime-positive`); lifetime <= 0 means entries never expire (`lifetime-positive--never-expires`). |
+| histogram-bins | one-count-per-bin | preserve | The starter already returns one count per bin, zeros included. A rewrite might return only non-empty bins (`one-count-per-bin`). |
+| histogram-bins | uneven-bins | inferable | The caller passes explicit edges, so bins must follow them. The starter's equal-width assumption is a bug (`uneven-bins`). |
+| histogram-bins | internal-edges | preserve | The starter already counts a value on an internal edge in the bin that starts there (equal-width bins). A rewrite might use right-closed bins (`internal-edges`). |
+| histogram-bins | first-edge | inferable | **Borderline.** Once internal edges go right, bins are `[low, high)` and the first edge belongs to the first bin. The starter's strict `low <` is the bug. Alternatives: drop it (`first-edge`, the starter's behaviour) or raise. |
+| histogram-bins | last-edge | arbitrary | Graded: a value on the last edge counts in the last bin (NumPy's convention, a known attractor). Alternatives: drop it, as the starter does (`last-edge`); treat it as outside a uniformly half-open range and raise (`last-edge--raises`). |
+| histogram-bins | out-of-range | arbitrary | Graded: `ValueError`. Alternatives: ignore the value, as the starter does (`out-of-range`); clamp it into the end bins (`out-of-range--clamped`). |
+| meeting-starts | avoids-busy | preserve | The starter already omits starts whose meeting overlaps the inside of a busy interval, for any busy order. A rewrite might test only whether the start lies inside a busy interval (`avoids-busy`). Boundary contact is a separate decision. |
+| meeting-starts | half-open-intervals | inferable | Back-to-back meetings and meetings ending at the end of the day are normal calendar behaviour. The starter's strict comparisons are a bug (`half-open-intervals`). |
+| meeting-starts | invalid-busy-interval | arbitrary | Graded: `ValueError` when end <= start. Alternatives: ignore the interval (`invalid-busy-interval`); swap reversed ends (`invalid-busy-interval--swapped`); reject only reversed intervals, because a zero-length one blocks nothing (`invalid-busy-interval--zero-allowed`). |
+| meeting-starts | positive-length | arbitrary | Graded: `ValueError` for length <= 0. Alternatives: no check, so zero-length meetings fit everywhere, as in the starter (`positive-length`); return `[]` (`positive-length--empty`). |
+| meeting-starts | empty-day | arbitrary | Graded: `ValueError` when day_end <= day_start. Alternatives: no check, so the result is `[]`, as in the starter (`empty-day`); reject only a reversed day and return `[]` for an empty one (`empty-day--reversed-only`). |
+| option-string | basic-pairs | preserve | The starter already turns "a=b,c=d" into a dict and keeps letter case. A rewrite might lower-case keys (`basic-pairs`). |
+| option-string | value-contains-equals | inferable | Splitting at the first "=" is the near-universal convention (`urllib.parse.parse_qsl` does it), and values such as base64 tokens contain "=". Alternatives: split at the last "=" (`value-contains-equals`) or raise, as the starter does. |
+| option-string | duplicate-keys | arbitrary | Graded: `ValueError`. Alternatives: last wins, as in the starter (`duplicate-keys`); first wins (`duplicate-keys--first-wins`). |
+| option-string | bare-key | arbitrary | Graded: "verbose" sets the key to `True`. Alternatives: an empty-string value, as `str.partition` gives (`bare-key`); `None` (`bare-key--none`); `ValueError`, as the starter does (`bare-key--raises`). |
+| option-string | empty-items | arbitrary | Graded: empty items from doubled, leading or trailing commas are skipped. Alternatives: treat an empty item as a bare empty key (`empty-items`); `ValueError`, as the starter does (`empty-items--raises`). |
+| option-string | surrounding-spaces | arbitrary | Graded: spaces around keys and values are ignored. Alternatives: keep them, as the starter does (`surrounding-spaces`); strip only the ends of each item, so spaces around "=" stay (`surrounding-spaces--item-ends`). |
+| pagination | returns-list | preserve | The starter's `list(...)` already returns a list for tuples and strings. A rewrite might return the sliced sequence's own type (`returns-list`). |
+| pagination | past-end-is-empty | preserve | The starter's slicing already returns `[]` past the last page. A rewrite might raise instead (`past-end-is-empty`). |
+| pagination | page-numbering | arbitrary | Graded: pages start at 1, and a page below 1 raises `ValueError`. The previous "one-based" and "page-below-one" decisions were merged, because rejecting page 0 revealed the numbering. Alternatives: 0-based pages, as in the starter (`page-numbering`); 1-based with pages below 1 clamped to 1 (`page-numbering--clamped`); 1-based with `[]` below 1 (`page-numbering--empty`). |
+| pagination | count-rounds-up | inferable | A final, partly filled page is still a page. Ceiling division is the universal convention; the starter floors (`count-rounds-up`). |
+| pagination | per-page-positive | arbitrary | Graded: `ValueError` from both functions. Alternatives: no check, so `ZeroDivisionError` or odd results, as in the starter (`per-page-positive`); per_page < 1 means everything on one page (`per-page-positive--single-page`); treat it as 1 (`per-page-positive--clamped`). |
+| pagination | negative-total | arbitrary | Graded: `ValueError`. Alternatives: no check, so whatever the formula gives, as in the starter (`negative-total`); return 0 pages (`negative-total--zero`). |
+| port-spec | malformed-raises | preserve | The starter's `int()` and unpacking already raise `ValueError` for "http", "80-", "1-2-3" and "8o". A rewrite might skip bad items (`malformed-raises`). |
+| port-spec | inclusive-ranges | inferable | "8000-8002" means three ports in every configuration convention. The starter's `range(low, high)` is an off-by-one bug (`inclusive-ranges`). |
+| port-spec | port-max | inferable | 65535 is the largest TCP/UDP port, so higher numbers are errors. Alternatives: accept them (`port-max`, the starter's behaviour) or clamp. Port 0 is not graded. |
+| port-spec | duplicate-ports | arbitrary | Graded: each port listed once. Alternatives: keep duplicates, as the starter does (`duplicate-ports`); `ValueError` for a repeated port (`duplicate-ports--raises`). Sorting is now a stated prerequisite ("a sorted list"), not part of this decision. |
+| port-spec | backwards-range | arbitrary | Graded: `ValueError` for "10-5". Alternatives: swap the ends (`backwards-range`); return no ports for that range, as the starter does (`backwards-range--empty`). |
+| port-spec | empty-spec | arbitrary | Graded: "" or whitespace gives `[]`. Alternatives: `ValueError`, as the starter does (`empty-spec`); an empty spec means every port (`empty-spec--all-ports`). |
+| table-render | header-sets-width | inferable | A long header that pushes the separators out of line is visibly broken. The starter sizes columns from cells only (`header-sets-width`). |
+| table-render | empty-rows | arbitrary | Relabelled from inferable after the audit. Graded: the header line and the separator line. Alternatives: `""` (`empty-rows`); `ValueError`, as the starter does (`empty-rows--raises`); the header line alone (`empty-rows--header-only`). |
+| table-render | numbers-right-aligned | arbitrary | Graded: int and float cells right-aligned, everything else (digit strings too) left-aligned. Alternatives: left-align everything, as the starter does (`numbers-right-aligned`); right-align every body cell (`numbers-right-aligned--all-right`); right-align ints only (`numbers-right-aligned--ints-only`). |
+| table-render | none-is-blank | arbitrary | Graded: `None` renders as an empty cell. Alternatives: "None" via `str()`, as the starter does (`none-is-blank`); a "-" placeholder (`none-is-blank--dash`). |
+| table-render | ragged-rows | arbitrary | Graded: `ValueError` for too many or too few cells. Alternatives: render rows as given, so missing cells are left out and extra cells are dropped (`ragged-rows`); pad short rows with blanks and drop extra cells (`ragged-rows--padded`). |
+
+## Choices that are deliberately ungraded
+
+No check depends on these choices, so an agent may decide them either way.
+The throwaway validator's probes confirm that flipping each one changes no
+check.
+
+- bill-split: empty or negative weights, which are outside the declared
+  domain.
+- duration-parse: uppercase units, unit order, decimals and outer whitespace.
+- expiring-cache: whether an entry is still live at exactly its expiry time,
+  and whether expired entries are evicted first.
+- histogram-bins: invalid edge lists.
+- meeting-starts: the candidate grid (every check uses a day_start aligned
+  to step), and the order of validation.
+- option-string: conversion of numeric values, and the empty string as input.
+- pagination: `page_count(0, n)`.
+- port-spec: port 0, spaces in specs, and empty items in a non-empty spec.
+- table-render: trailing spaces (every check compares lines after
+  `rstrip`), and bool cells, which are outside the declared domain.

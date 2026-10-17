@@ -2,7 +2,7 @@ def meeting_starts(busy, day_start, day_end, length, step=15):
     """Return candidate start times for a meeting of `length` minutes.
 
     All times are whole minutes after midnight. `busy` is a list of
-    (start, end) pairs, and the meeting must fit between day_start and day_end.
+    (start, end) pairs, and the working day runs from day_start to day_end.
     """
     starts = []
     t = day_start

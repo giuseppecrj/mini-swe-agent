@@ -1,8 +1,7 @@
 def histogram(values, edges):
-    """Count how many values fall into each bin.
+    """Count how many of the values fall into each bin.
 
-    `edges` lists the bin boundaries in increasing order, so n + 1 edges
-    describe n bins. The result is a list with one count per bin.
+    `edges` lists the bin boundaries in increasing order.
     """
     low, high = edges[0], edges[-1]
     bins = len(edges) - 1

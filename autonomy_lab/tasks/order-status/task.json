@@ -1,7 +1,0 @@
-{
-  "id": "order-status",
-  "module": "order_status.py",
-  "brief": "next_status() needs a correctness pass",
-  "version": 1,
-  "author": "coordinator"
-}

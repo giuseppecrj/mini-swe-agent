@@ -4,20 +4,16 @@ def _text(cell):
     return str(cell)
 
 
-def _is_number(cell):
-    return isinstance(cell, (int, float)) and not isinstance(cell, bool)
-
-
 def render_table(headers, rows):
-    """Render rows of values as a plain-text table under a header line.
+    """Render a plain-text table of headers and rows.
 
-    Cells are separated by " | " and the line under the header uses "-+-"
-    where the column separators are.
+    Cells are strings, ints, floats or None. Columns are separated by " | ",
+    and the line after the headers uses "-+-" where the column separators are.
     """
     for row in rows:
         if len(row) != len(headers):
             raise ValueError("every row must have exactly one cell per header")
-    widths = [0 if rows else len(str(h)) for h in headers]
+    widths = [0] * len(headers)
     for row in rows:
         for i, cell in enumerate(row):
             widths[i] = max(widths[i], len(_text(cell)))
@@ -26,7 +22,7 @@ def render_table(headers, rows):
         parts = []
         for cell, w in zip(cells, widths):
             text = _text(cell)
-            if align_numbers and _is_number(cell):
+            if align_numbers and isinstance(cell, (int, float)):
                 parts.append(text.rjust(w))
             else:
                 parts.append(text.ljust(w))

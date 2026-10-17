@@ -1,16 +1,16 @@
 split_amount divides a bill or a payout between people.
-Amounts are integer cents, never floating-point values.
-Each weight sets one party's portion relative to the others.
-Equal weights describe an even split.
 Shared-expense apps use a helper like this one.
 A common case is one person paying for a group meal.
-The result has one share per weight, in the same order.
-The module uses only the Python standard library.
-The function does not modify the weights list it receives.
 A typical call splits a bill between two and six people.
-Weights are often head counts or nights stayed.
+Weights often come from head counts or nights stayed.
 The results are shown next to each person's name.
 Other currencies use the same function with their minor units.
+The module uses only the Python standard library.
+The function does not modify the weights list it receives.
 The function returns a new list on each call.
 The web app and the reporting job share this helper.
+A monthly statement lists each person's part of shared costs.
 Unit tests call it with small literal amounts.
+Roommates use it to divide rent and utility bills.
+Group trip budgets are another common use.
+Nothing is written to disk or sent over the network.

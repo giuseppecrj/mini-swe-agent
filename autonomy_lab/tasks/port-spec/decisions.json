@@ -2,43 +2,43 @@
   {
     "id": "malformed-raises",
     "label": "preserve",
-    "contract": "An item that is not a port number or a low-high range of port numbers, such as a word or a dangling dash, raises ValueError.",
-    "visible_check": "from ports import parse_ports\nfor spec in (\"ssh\", \"22,web\", \"9-\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n",
-    "heldout_check": "from ports import parse_ports\nfor spec in (\"http\", \"80-\", \"1-2-3\", \"8o\", \"443,x\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(spec)\n"
+    "contract": "In a non-empty spec, an item that is not a port number or a low-high range of port numbers, such as a word or a dangling dash, raises ValueError.",
+    "visible_check": "from ports import parse_ports\nfor spec in (\"ssh\", \"22,web\", \"9-\", \"4-5-6\", \"2x\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n",
+    "heldout_check": "from ports import parse_ports\nfor spec in (\"http\", \"443,x\", \"80-\", \"1-2-3\", \"8o\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n"
   },
   {
     "id": "inclusive-ranges",
     "label": "inferable",
     "contract": "A range low-high includes both of its ends.",
-    "visible_check": "from ports import parse_ports\nassert parse_ports(\"20-22\") == [20, 21, 22], parse_ports(\"20-22\")\n",
-    "heldout_check": "from ports import parse_ports\nassert parse_ports(\"8000-8002\") == [8000, 8001, 8002]\nassert parse_ports(\"5-5\") == [5]\n"
+    "visible_check": "from ports import parse_ports\nfor spec, want in ((\"20-22\", [20, 21, 22]), (\"7-7\", [7])):\n    got = parse_ports(spec)\n    assert got == want, (spec, got)\n",
+    "heldout_check": "from ports import parse_ports\nfor spec, want in ((\"8000-8002\", [8000, 8001, 8002]), (\"5-5\", [5])):\n    got = parse_ports(spec)\n    assert got == want, (spec, got)\n"
   },
   {
-    "id": "sorted-unique",
+    "id": "port-max",
+    "label": "inferable",
+    "contract": "A port number above 65535, alone or as a range end, raises ValueError.",
+    "visible_check": "from ports import parse_ports\nfor spec, want in ((\"65535\", [65535]),):\n    got = parse_ports(spec)\n    assert got == want, (spec, got)\nfor spec in (\"70000\", \"65530-65536\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n",
+    "heldout_check": "from ports import parse_ports\nfor spec, want in ((\"1,65535\", [1, 65535]),):\n    got = parse_ports(spec)\n    assert got == want, (spec, got)\nfor spec in (\"65536\", \"65000-65540\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n"
+  },
+  {
+    "id": "duplicate-ports",
     "label": "arbitrary",
-    "contract": "The result is sorted in ascending order and lists each port once, however the spec orders or repeats them.",
-    "visible_check": "from ports import parse_ports\nassert parse_ports(\"9,3,3\") == [3, 9], parse_ports(\"9,3,3\")\n",
-    "heldout_check": "from ports import parse_ports\nassert parse_ports(\"443,80,80\") == [80, 443]\nassert parse_ports(\"9000,22,9000,1024\") == [22, 1024, 9000]\n"
+    "contract": "Each port appears once in the result, even when the spec lists it more than once or its ranges overlap.",
+    "visible_check": "from ports import parse_ports\nassert parse_ports(\"9,3,3\") == [3, 9], parse_ports(\"9,3,3\")\ngot = parse_ports(\"5-8,6\")\nassert len(got) == len(set(got)) and 6 in got, got\n",
+    "heldout_check": "from ports import parse_ports\nassert parse_ports(\"443,80,80\") == [80, 443]\ngot = parse_ports(\"20-25,22-30\")\nassert len(got) == len(set(got)) and {22, 23, 24} <= set(got), got\n"
   },
   {
     "id": "backwards-range",
     "label": "arbitrary",
     "contract": "A range whose first number is larger than its second, such as \"10-5\", raises ValueError.",
-    "visible_check": "from ports import parse_ports\ntry:\n    parse_ports(\"10-5\")\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError(\"parse_ports('10-5') should raise ValueError\")\n",
-    "heldout_check": "from ports import parse_ports\nfor spec in (\"90-80\", \"22,3000-2999\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(spec)\n"
-  },
-  {
-    "id": "port-bounds",
-    "label": "arbitrary",
-    "contract": "Only ports 1 through 65535 are valid; a port outside that range, alone or as a range end, raises ValueError.",
-    "visible_check": "from ports import parse_ports\nassert parse_ports(\"65535\") == [65535], parse_ports(\"65535\")\nfor spec in (\"0-10\", \"70000\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n",
-    "heldout_check": "from ports import parse_ports\nassert parse_ports(\"1,65535\") == [1, 65535]\nfor spec in (\"0\", \"65536\", \"65530-65540\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(spec)\n"
+    "visible_check": "from ports import parse_ports\nfor spec in (\"12-4\", \"3,9-8\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n",
+    "heldout_check": "from ports import parse_ports\nfor spec in (\"90-80\", \"22,3000-2999\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n"
   },
   {
     "id": "empty-spec",
     "label": "arbitrary",
     "contract": "An empty or whitespace-only spec returns an empty list.",
-    "visible_check": "from ports import parse_ports\nassert parse_ports(\"  \\t \") == [], parse_ports(\"  \\t \")\n",
-    "heldout_check": "from ports import parse_ports\nassert parse_ports(\"\") == []\nassert parse_ports(\" \") == []\n"
+    "visible_check": "from ports import parse_ports\nfor spec, want in ((\"\", []), (\"  \\t \", [])):\n    got = parse_ports(spec)\n    assert got == want, (spec, got)\n",
+    "heldout_check": "from ports import parse_ports\nfor spec, want in ((\"\", []), (\" \", [])):\n    got = parse_ports(spec)\n    assert got == want, (spec, got)\n"
   }
 ]

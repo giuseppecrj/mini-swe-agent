@@ -2,13 +2,10 @@ import bisect
 
 
 def histogram(values, edges):
-    """Count how many values fall into each bin.
+    """Count how many of the values fall into each bin.
 
-    `edges` lists the bin boundaries in increasing order, so n + 1 edges
-    describe n bins. The result is a list with one count per bin.
+    `edges` lists the bin boundaries in increasing order.
     """
-    if len(edges) < 2 or any(a >= b for a, b in zip(edges, edges[1:])):
-        raise ValueError("edges must be at least two strictly increasing numbers")
     bins = len(edges) - 1
     counts = [0] * bins
     for value in values:
@@ -17,6 +14,7 @@ def histogram(values, edges):
         if value == edges[-1]:
             counts[bins - 1] += 1
             continue
-        index = int((value - edges[0]) / ((edges[-1] - edges[0]) / bins))
+        width = (edges[-1] - edges[0]) / bins
+        index = int((value - edges[0]) / width)
         counts[index] += 1
     return counts

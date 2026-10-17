@@ -1,14 +1,15 @@
 def split_amount(total_cents, weights):
     """Split an amount of money between parties in proportion to their weights.
 
-    total_cents is an integer number of cents and weights is a list of
-    integers, one per party. The result is a list of integer cents per party.
+    total_cents is an integer number of cents. weights is a non-empty list of
+    non-negative integers, one per party. The result is a list of integer
+    cents per party that adds up to total_cents.
     """
-    if not weights or any(w < 0 for w in weights) or sum(weights) == 0:
-        raise ValueError("weights must be non-negative and not all zero")
     if total_cents < 0:
         raise ValueError("total_cents must not be negative")
     weight_sum = sum(weights)
+    if weight_sum == 0:
+        raise ValueError("at least one weight must be positive")
     shares = [total_cents * w // weight_sum for w in weights]
     remainders = [total_cents * w % weight_sum for w in weights]
     leftover = total_cents - sum(shares)

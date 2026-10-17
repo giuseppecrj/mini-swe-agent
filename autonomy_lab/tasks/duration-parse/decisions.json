@@ -2,43 +2,36 @@
   {
     "id": "combined-units",
     "label": "preserve",
-    "contract": "A duration may combine several unit components, and the result is the sum of all of them in seconds.",
-    "visible_check": "from durations import parse_duration\nassert parse_duration(\"2h15m\") == 8100, parse_duration(\"2h15m\")\nassert parse_duration(\"1d1s\") == 86401, parse_duration(\"1d1s\")\n",
-    "heldout_check": "from durations import parse_duration\nassert parse_duration(\"1h30m\") == 5400\nassert parse_duration(\"3d4h5m6s\") == 273906\n"
+    "contract": "A duration can combine components with different units, as in \"1h30m\", and the result is their total in seconds.",
+    "visible_check": "from durations import parse_duration\nfor text, want in ((\"2h15m\", 8100), (\"1d1s\", 86401)):\n    got = parse_duration(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from durations import parse_duration\nfor text, want in ((\"1h30m\", 5400), (\"3d4h5m6s\", 273906)):\n    got = parse_duration(text)\n    assert got == want, (text, got)\n"
   },
   {
     "id": "invalid-text",
     "label": "inferable",
-    "contract": "Text that is not a duration, for example an empty string, a word, an unknown unit, a unit with no number, or a duration followed by stray characters, raises ValueError.",
-    "visible_check": "from durations import parse_duration\nfor text in (\"abc\", \"3x\", \"h\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n",
-    "heldout_check": "from durations import parse_duration\nfor text in (\"\", \"soon\", \"7w\", \"m\", \"5h-\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(text)\n"
+    "contract": "Text that is not a duration raises ValueError: for example a word, a number with an unknown unit, a unit with no number, or a valid duration followed by stray characters.",
+    "visible_check": "from durations import parse_duration\nfor text in (\"abc\", \"3x\", \"h\", \"4m!\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n",
+    "heldout_check": "from durations import parse_duration\nfor text in (\"soon\", \"7w\", \"m\", \"5h-\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n"
   },
   {
     "id": "bare-number-seconds",
     "label": "arbitrary",
     "contract": "A string of digits with no unit is a number of seconds.",
-    "visible_check": "from durations import parse_duration\nassert parse_duration(\"90\") == 90, parse_duration(\"90\")\nassert parse_duration(\"7\") == 7, parse_duration(\"7\")\n",
-    "heldout_check": "from durations import parse_duration\nassert parse_duration(\"45\") == 45\nassert parse_duration(\"0\") == 0\n"
+    "visible_check": "from durations import parse_duration\nfor text, want in ((\"90\", 90), (\"7\", 7)):\n    got = parse_duration(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from durations import parse_duration\nfor text, want in ((\"45\", 45), (\"600\", 600)):\n    got = parse_duration(text)\n    assert got == want, (text, got)\n"
   },
   {
-    "id": "case-insensitive-units",
+    "id": "repeated-unit",
     "label": "arbitrary",
-    "contract": "Unit letters are case-insensitive, so an uppercase unit means the same as its lowercase form.",
-    "visible_check": "from durations import parse_duration\nassert parse_duration(\"2H\") == 7200, parse_duration(\"2H\")\nassert parse_duration(\"10S\") == 10, parse_duration(\"10S\")\n",
-    "heldout_check": "from durations import parse_duration\nassert parse_duration(\"3M\") == 180\nassert parse_duration(\"1D\") == 86400\n"
+    "contract": "A duration that uses the same unit more than once, such as \"1h1h\", raises ValueError.",
+    "visible_check": "from durations import parse_duration\nfor text in (\"2m2m\", \"1d1d\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n",
+    "heldout_check": "from durations import parse_duration\nfor text in (\"3h3h\", \"1h5m5m\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n"
   },
   {
-    "id": "canonical-order",
+    "id": "blank-text",
     "label": "arbitrary",
-    "contract": "Components must appear in the order d, h, m, s with each unit at most once; a string that repeats a unit or puts units out of that order raises ValueError.",
-    "visible_check": "from durations import parse_duration\nfor text in (\"30m1h\", \"1h1h\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n",
-    "heldout_check": "from durations import parse_duration\nfor text in (\"5s2m\", \"2h2h\", \"1m1d\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(text)\n"
-  },
-  {
-    "id": "whole-numbers-only",
-    "label": "arbitrary",
-    "contract": "Only whole-number amounts are allowed; a component with a decimal point, such as \"1.5h\", raises ValueError.",
-    "visible_check": "from durations import parse_duration\ntry:\n    parse_duration(\"1.5h\")\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError(\"parse_duration('1.5h') should raise ValueError\")\n",
-    "heldout_check": "from durations import parse_duration\nfor text in (\"0.5m\", \"2.25h\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(text)\n"
+    "contract": "An empty or whitespace-only string returns None.",
+    "visible_check": "from durations import parse_duration\nfor text in (\"\", \"   \"):\n    got = parse_duration(text)\n    assert got is None, (text, got)\n",
+    "heldout_check": "from durations import parse_duration\nfor text in (\"\", \" \\t \"):\n    got = parse_duration(text)\n    assert got is None, (text, got)\n"
   }
 ]

@@ -2,6 +2,6 @@
   "id": "port-spec",
   "module": "ports.py",
   "brief": "parse_ports() returns wrong results for some specs",
-  "version": 1,
+  "version": 2,
   "author": "coordinator"
 }

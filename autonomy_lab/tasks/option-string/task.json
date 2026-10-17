@@ -1,0 +1,7 @@
+{
+  "id": "option-string",
+  "module": "options.py",
+  "brief": "parse_options() needs a correctness pass",
+  "version": 1,
+  "author": "coordinator"
+}
