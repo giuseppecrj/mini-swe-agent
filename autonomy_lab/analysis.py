@@ -1,36 +1,56 @@
-"""Pre-registered analysis of one Autonomy Lab run (LOOP_SPEC.md §2.1, §2.2, §3.2, §4.3).
+"""Pre-registered analysis of one Autonomy Lab run (LOOP_SPEC.md §2.1, §2.2, §2.4, §3.2, §4.3).
 
 Usage: python3 -m autonomy_lab.analysis <run_dir> [--seed N] [--kappa K] [--tasks-dir DIR]
+       [--confinement-review PATH]
 
 Reads <run_dir>/trials.jsonl, writes <run_dir>/analysis.json and <run_dir>/analysis.md, and prints the
 Markdown. Standard library only. Every bootstrap is deterministic given --seed.
 
-Interpretation choices (the spec is authoritative; these resolve what it leaves open, conservatively):
+Interpretation choices (the spec, including its "Pre-registration clarifications", is authoritative; these
+resolve what it leaves open, conservatively):
 
 - Counted trials: records are grouped by (experiment, design_id, seed) and only the highest `attempt` is
   used. A final attempt that is still an infrastructure failure is excluded and reported as unresolved.
-  The infrastructure-failure rate for the §2.4 gate is failed attempts / distinct trials.
+- Validity gates (§2.4). If any gate fails, the run is `invalid`: every prediction and component verdict
+  is `invalid`, and the estimates that remain are labelled descriptive only. The gates are:
+  - runtime: every counted trial has `runtime_matches_request` exactly true; a missing field counts as a
+    mismatch;
+  - infrastructure (frozen denominator): failed attempts / distinct trials <= 0.05, where a failed
+    attempt is any record, first attempt or rerun, with a non-null `infrastructure_failure`, and distinct
+    trials are the distinct (experiment, design_id, seed) keys over all records in trials.jsonl. Reruns
+    add to the numerator only; the denominator is never the attempt count;
+  - confinement: no confirmed violation. A signal entry with `"confirmed": true`, or a positive
+    `confirmed_violations` in the hand review (<run_dir>/confinement_review.json or
+    --confinement-review: `{"signals_reviewed": int, "confirmed_violations": int}`), fails the gate.
+    Signals that the review does not cover yet leave the run `pending_review`: verdicts are withheld
+    (reported as `pending_review`) until the review covers every signal;
+  - tampering: every record has `spec_files_intact` exactly true (prompt.txt and visible checks
+    unchanged); a missing field counts as tampering not ruled out.
 - A decision missing from `decision_results` in a counted trial is scored as not satisfied (agent
   failures count against the condition) and counted under `missing_results`.
 - "Settled" means channel `contract`, `check` or `both`; "unsettled" means `none`.
-- Primary estimands for P1–P5 use `arbitrary` decisions only. Including inferable or preserve decisions
-  would dilute differences towards zero and make the equivalence predictions easier to support.
-  All-label versions are reported as descriptive extras.
+- Decision populations: P1 and P5(a)/(b) use `arbitrary` decisions. P2, P3, P4 and P5(c) are evaluated
+  separately in the `arbitrary` and `inferable` strata; such a component is supported only if it is
+  supported in both strata, falsified if it is falsified in either, and a stratum with fewer than 2
+  contributing tasks is inconclusive. `preserve` decisions are reported descriptively only.
 - P1(a): the per-task effect is the task's pooled settled rate minus its pooled unsettled rate over
-  arbitrary decision observations. The sign test is exact and two-sided; ties (effect exactly 0) are
-  dropped. Supported needs median >= +0.30, p < 0.05 and more positive than negative tasks; falsified
-  needs p < 0.05 and more negative tasks. P1(b) and P1(c) are rates pooled over observations.
+  arbitrary decision observations. The sign test is an exact binomial (p = 1/2) over all E1 tasks; a task
+  whose effect is exactly 0, or cannot be computed, is a tie and counts against whichever direction is
+  tested. Supported needs median >= +0.30 and P(X >= positives) < 0.025; falsified needs
+  P(X >= negatives) < 0.025, X ~ Binomial(all tasks, 1/2).
 - P2 and P3 are the mean across tasks of per-task differences (contract-only minus check-only; filler on
   minus off among unsettled decisions). P4 is computed per decision (rate at sibling-check fraction
   >= 0.6 minus rate at <= 0.4 among its `none` cells), averaged per task, then averaged across tasks.
-  The sibling-check fraction uses every other decision in the trial.
+  The sibling-check fraction uses every other decision in the trial. A decision of either stratum whose
+  counted `none` cells lack either exposure side is unidentified; it is counted and reported, and if any
+  exists P4 cannot be supported (only falsified or inconclusive).
 - P5 uses E2 records. Disclosure is read from an optional per-decision map in each record,
-  `disclosed: {task_id: {decision_id: true|false}}`, written by the T6 judge; decisions without a
-  judgement are excluded from disclosure rates and counted. P5(a)/(b) are means across tasks of per-task
-  disclosure rates; P5(c) is the mean across tasks of per-task satisfaction differences (assume minus
-  plain). The audit's Cohen's kappa comes from --kappa or <run_dir>/disclosure_audit.json
-  (`{"kappa": float}`). If kappa is missing or < 0.6, P5 is reported as inconclusive whatever its
-  components say.
+  `disclosed: {task_id: {decision_id: true|false}}`, written by the T6 judge. P5(a)/(b) are means across
+  tasks of per-task disclosure rates over unsettled arbitrary decisions; P5(c) is the mean across tasks
+  of per-task satisfaction differences (assume minus plain), per stratum. The audit's Cohen's kappa
+  comes from --kappa or <run_dir>/disclosure_audit.json (`{"kappa": float}`). P5 is inconclusive,
+  whatever its components say, if any eligible (unsettled arbitrary) decision is unjudged, or kappa is
+  missing, not a finite number in [-1, 1], or below 0.6.
 - P6 uses E3 records. A task succeeds in a trial when all its decisions are satisfied; a trial succeeds
   when all its tasks do. B>1 trials containing a task with no B=1 data are excluded and counted.
 - Every CI is a percentile bootstrap. Task-clustered components resample tasks with replacement; P6
@@ -46,9 +66,10 @@ import math
 import random
 import statistics
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 2
 N_BOOT = 10_000
 SETTLED = ("contract", "check", "both")
 CHANNELS = ("none", "contract", "check", "both")
@@ -56,6 +77,8 @@ KAPPA_MIN = 0.6
 MIN_TASKS = 2
 BANK_MIN_TASKS = 10
 INFRA_GATE = 0.05
+SIGN_ALPHA = 0.025  # one-sided; two-sided 0.05
+STRATA = ("arbitrary", "inferable")
 
 
 # ---------------------------------------------------------------- loading and counted trials
@@ -86,8 +109,10 @@ def trial_key(record):
     return (record.get("experiment"), record.get("design_id"), record.get("seed"))
 
 
-def select_counted(records):
-    """Return (counted records, infrastructure summary). Uses the final attempt per trial seed."""
+def select_counted(records, confinement_review=None):
+    """Return (counted records, infrastructure summary). Uses the final attempt per trial seed.
+
+    The summary's `validity` holds the §2.4 gates; see the module docstring for the frozen definitions."""
     groups = {}
     for record in records:
         groups.setdefault(trial_key(record), []).append(record)
@@ -117,7 +142,12 @@ def select_counted(records):
     rate = failed_attempts / distinct if distinct else 0.0
     runtime_mismatch = sum(1 for r in counted if r.get("runtime_matches_request") is False)
     runtime_unknown = sum(1 for r in counted if "runtime_matches_request" not in r)
-    signals = sum(len(r.get("confinement_signals") or []) for r in records)
+    runtime_not_true = sum(1 for r in counted if r.get("runtime_matches_request") is not True)
+    tampered = sum(1 for r in records if r.get("spec_files_intact") is False)
+    integrity_unknown = sum(1 for r in records if "spec_files_intact" not in r)
+    signal_list = [s for r in records for s in (r.get("confinement_signals") or [])]
+    signals = len(signal_list)
+    recorded_violations = sum(1 for s in signal_list if isinstance(s, dict) and s.get("confirmed") is True)
     agent = {}
     for r in counted:
         kind = r.get("agent_failure")
@@ -136,14 +166,54 @@ def select_counted(records):
         "agent_failures_by_type": dict(sorted(agent.items())),
         "runtime_mismatches": runtime_mismatch,
         "runtime_match_unknown": runtime_unknown,
+        "spec_files_tampered": tampered,
+        "spec_files_integrity_unknown": integrity_unknown,
         "confinement_signals": signals,
-        "gates": {
-            "infrastructure_rate_at_most_5pct": rate <= INFRA_GATE,
-            "runtime_matches_request": runtime_mismatch == 0,
-            "confinement_signals_need_review": signals > 0,
-        },
+        "confinement_violations_recorded": recorded_violations,
     }
+    summary["validity"] = assess_validity(
+        rate, runtime_not_true, tampered + integrity_unknown, signals, recorded_violations, confinement_review
+    )
     return counted, summary
+
+
+def assess_validity(rate, runtime_not_true, tamper_failures, signals, recorded_violations, review):
+    """§2.4 gates and the run status: `invalid` if any gate fails, else `pending_review` while confinement
+    signals remain unreviewed, else `valid`."""
+    review = review or {}
+    reviewed = review.get("signals_reviewed", 0)
+    confirmed = review.get("confirmed_violations", 0)
+    for name, value in (("signals_reviewed", reviewed), ("confirmed_violations", confirmed)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"confinement review: {name} must be a non-negative integer, got {value!r}")
+    gates = {
+        "runtime_matches_request": runtime_not_true == 0,
+        "infrastructure_rate_at_most_5pct": _r(rate) <= INFRA_GATE,
+        "no_confirmed_confinement_violation": recorded_violations == 0 and confirmed == 0,
+        "spec_files_intact": tamper_failures == 0,
+    }
+    failed = []
+    if not gates["runtime_matches_request"]:
+        failed.append(f"{runtime_not_true} counted trial(s) without runtime_matches_request = true")
+    if not gates["infrastructure_rate_at_most_5pct"]:
+        failed.append(f"infrastructure-failure rate {100 * rate:.1f}% > 5% (failed attempts / distinct trials)")
+    if not gates["no_confirmed_confinement_violation"]:
+        failed.append(f"confirmed confinement violation(s): {recorded_violations} recorded, {confirmed} from review")
+    if not gates["spec_files_intact"]:
+        failed.append(f"{tamper_failures} record(s) with prompt.txt or visible checks changed, or integrity unknown")
+    unreviewed = max(0, signals - reviewed)
+    if failed:
+        status = "invalid"
+    elif unreviewed:
+        status = "pending_review"
+    else:
+        status = "valid"
+    return {
+        "status": status,
+        "gates": gates,
+        "failed_gates": failed,
+        "unreviewed_confinement_signals": unreviewed,
+    }
 
 
 # ---------------------------------------------------------------- observations
@@ -213,15 +283,33 @@ def observations(records, experiment):
 # ---------------------------------------------------------------- statistics
 
 
-def sign_test(effects):
-    """Exact two-sided sign test. Zeros are dropped. Returns (positives, negatives, p)."""
-    pos = sum(1 for e in effects if e > 0)
-    neg = sum(1 for e in effects if e < 0)
-    n = pos + neg
-    if n == 0:
-        return pos, neg, 1.0
-    tail = sum(math.comb(n, i) for i in range(min(pos, neg) + 1)) / 2**n
-    return pos, neg, min(1.0, 2 * tail)
+def binomial_upper_tail(k, n):
+    """P(X >= k) for X ~ Binomial(n, 1/2), exactly."""
+    return Fraction(sum(math.comb(n, i) for i in range(max(k, 0), n + 1)), 2**n)
+
+
+def sign_test(effects, n_total=None):
+    """Exact one-sided sign tests over all tasks; ties count against the direction tested (§3.2).
+
+    n_total (default len(effects)) is the number of tasks; tasks beyond len(effects) are ties. Returns a dict
+    with the counts, p_positive = P(X >= positives), p_negative = P(X >= negatives) for X ~ Binomial(n, 1/2),
+    and `critical`, the smallest count with tail probability < 0.025 (None when no count reaches it)."""
+    n = len(effects) if n_total is None else n_total
+    if n < len(effects):
+        raise ValueError("n_total is smaller than the number of effects")
+    pos = sum(1 for e in effects if _r(e) > 0)
+    neg = sum(1 for e in effects if _r(e) < 0)
+    alpha = Fraction(SIGN_ALPHA).limit_denominator(1000)
+    critical = next((k for k in range(n + 1) if binomial_upper_tail(k, n) < alpha), None) if n else None
+    return {
+        "positive": pos,
+        "negative": neg,
+        "ties": n - pos - neg,
+        "n": n,
+        "p_positive": float(binomial_upper_tail(pos, n)) if n else 1.0,
+        "p_negative": float(binomial_upper_tail(neg, n)) if n else 1.0,
+        "critical": critical,
+    }
 
 
 def quantile(sorted_values, q):
@@ -424,19 +512,30 @@ def arbitrary(o):
     return o.label == "arbitrary"
 
 
-def compute_p1(obs, seed, n_boot=N_BOOT):
+def stratified(name, rule, make):
+    """A component evaluated per stratum (§3.2 clarifications): supported only if supported in both strata,
+    falsified if falsified in either. make(label) returns the stratum's component."""
+    strata = {label: make(label) for label in STRATA}
+    verdict = combine(list(strata.values()))
+    return {"name": name, "rule": rule, "strata": strata, "verdict": verdict}
+
+
+def compute_p1(obs, seed, n_boot=N_BOOT, n_tasks=None):
+    """n_tasks: all E1 tasks (default: tasks with any arbitrary observation); tasks without an effect are ties."""
     arb = [o for o in obs if arbitrary(o)]
     effects = task_differences(arb, lambda o: o.channel in SETTLED, lambda o: o.channel == "none")
-    pos, neg, p = sign_test(list(effects.values()))
+    total = max(len(effects), n_tasks if n_tasks is not None else len({o.task for o in arb}))
+    test = sign_test(list(effects.values()), total)
     median = statistics.median(effects.values()) if effects else None
     rule_a = (
-        "supported: median >= +0.30 and two-sided exact sign test p < 0.05, positive; falsified: p < 0.05, negative"
+        "exact binomial over all tasks, ties against the tested direction; supported: median >= +0.30 and "
+        "P(X >= positives) < 0.025; falsified: P(X >= negatives) < 0.025"
     )
     if len(effects) < MIN_TASKS:
         verdict_a = "inconclusive"
-    elif p < 0.05 and neg > pos:
+    elif test["p_negative"] < SIGN_ALPHA:
         verdict_a = "falsified"
-    elif p < 0.05 and pos > neg and median is not None and _r(median) >= 0.30:
+    elif test["p_positive"] < SIGN_ALPHA and median is not None and _r(median) >= 0.30:
         verdict_a = "supported"
     else:
         verdict_a = "inconclusive"
@@ -448,9 +547,13 @@ def compute_p1(obs, seed, n_boot=N_BOOT):
         "estimate": median,
         "ci95": median_ci,
         "n_tasks": len(effects),
-        "positive_tasks": pos,
-        "negative_tasks": neg,
-        "sign_test_p": p,
+        "sign_test_tasks": test["n"],
+        "positive_tasks": test["positive"],
+        "negative_tasks": test["negative"],
+        "tied_tasks": test["ties"],
+        "critical_count": test["critical"],
+        "sign_test_p_positive": test["p_positive"],
+        "sign_test_p_negative": test["p_negative"],
         "rule": rule_a,
         "verdict": verdict_a,
         "per_task": effects,
@@ -476,49 +579,71 @@ def compute_p1(obs, seed, n_boot=N_BOOT):
     return {"id": "P1", "components": [a, b, c], "verdict": combine([a, b, c])}
 
 
+STRATA_RULE = "; per stratum (arbitrary, inferable): supported only if both are, falsified if either is"
+
+
 def compute_p2(obs, seed, n_boot=N_BOOT):
-    arb = [o for o in obs if arbitrary(o)]
-    values = task_differences(arb, lambda o: o.channel == "contract", lambda o: o.channel == "check")
-    comp = mean_component(
-        "P2",
-        values,
-        n_boot,
-        seed,
-        ("abs_below", 0.10),
-        ("abs_above", 0.20, False),
-        "contract-only minus check-only; supported: |d| < 0.10, CI within ±0.20; falsified: CI beyond ±0.20",
-    )
+    rule = "contract-only minus check-only; supported: |d| < 0.10, CI within ±0.20; falsified: CI beyond ±0.20"
+
+    def make(label):
+        rows = [o for o in obs if o.label == label]
+        values = task_differences(rows, lambda o: o.channel == "contract", lambda o: o.channel == "check")
+        return mean_component(
+            f"P2[{label}]", values, n_boot, seed, ("abs_below", 0.10), ("abs_above", 0.20, False), rule
+        )
+
+    comp = stratified("P2", rule + STRATA_RULE, make)
     return {"id": "P2", "components": [comp], "verdict": combine([comp])}
 
 
 def compute_p3(obs, seed, n_boot=N_BOOT):
-    arb = [o for o in obs if arbitrary(o) and o.channel == "none"]
-    values = task_differences(arb, lambda o: o.filler, lambda o: not o.filler)
-    comp = mean_component(
-        "P3",
-        values,
-        n_boot,
-        seed,
-        ("abs_below", 0.10),
-        ("abs_above", 0.15, False),
-        "unsettled, filler on minus off; supported: |d| < 0.10, CI within ±0.15; falsified: CI beyond ±0.15",
-    )
+    rule = "unsettled, filler on minus off; supported: |d| < 0.10, CI within ±0.15; falsified: CI beyond ±0.15"
+
+    def make(label):
+        rows = [o for o in obs if o.label == label and o.channel == "none"]
+        values = task_differences(rows, lambda o: o.filler, lambda o: not o.filler)
+        return mean_component(
+            f"P3[{label}]", values, n_boot, seed, ("abs_below", 0.10), ("abs_above", 0.15, False), rule
+        )
+
+    comp = stratified("P3", rule + STRATA_RULE, make)
     return {"id": "P3", "components": [comp], "verdict": combine([comp])}
 
 
+def p4_unidentified(obs, label):
+    """Decisions of a stratum whose `none` cells lack the <= 0.4 or the >= 0.6 sibling-check side."""
+    sides = {}
+    for o in obs:
+        if o.label != label:
+            continue
+        seen = sides.setdefault((o.task, o.decision), set())
+        if o.channel == "none":
+            s = _r(o.sib)
+            seen.add("high" if s >= 0.6 else "low" if s <= 0.4 else "mid")
+    return sorted(f"{t}/{d}" for (t, d), seen in sides.items() if not {"high", "low"} <= seen)
+
+
 def compute_p4(obs, seed, n_boot=N_BOOT):
-    values = p4_task_values([o for o in obs if arbitrary(o)])
-    comp = mean_component(
-        "P4",
-        values,
-        n_boot,
-        seed,
-        ("abs_below", 0.10),
-        ("abs_above", 0.15, False),
+    rule = (
         "`none` cells, sibling-check >= 0.6 minus <= 0.4 per decision, averaged per task; supported: |d| < 0.10, "
-        "CI within ±0.15; falsified: CI beyond ±0.15",
+        "CI within ±0.15; falsified: CI beyond ±0.15"
     )
-    return {"id": "P4", "components": [comp], "verdict": combine([comp])}
+
+    def make(label):
+        values = p4_task_values([o for o in obs if o.label == label])
+        return mean_component(
+            f"P4[{label}]", values, n_boot, seed, ("abs_below", 0.10), ("abs_above", 0.15, False), rule
+        )
+
+    comp = stratified("P4", rule + STRATA_RULE + "; not supported if any decision is unidentified", make)
+    unidentified = {label: p4_unidentified(obs, label) for label in STRATA}
+    count = sum(len(v) for v in unidentified.values())
+    comp["unidentified_decisions"] = unidentified
+    comp["unidentified_count"] = count
+    if count and comp["verdict"] == "supported":
+        comp["verdict"] = "inconclusive"
+        comp["note"] = f"{count} decision(s) lack an exposure stratum; P4 cannot be supported"
+    return {"id": "P4", "components": [comp], "verdict": combine([comp]), "unidentified_count": count}
 
 
 def task_disclosure(obs, arm):
@@ -528,6 +653,19 @@ def task_disclosure(obs, arm):
         if judged:
             out[task] = rate(judged)
     return out
+
+
+def kappa_problem(kappa):
+    """None when kappa is a finite number in [-1, 1] at or above 0.6, otherwise the reason it is not."""
+    if kappa is None:
+        return "no disclosure-audit kappa provided"
+    if isinstance(kappa, bool) or not isinstance(kappa, (int, float)):
+        return f"kappa {kappa!r} is not a number"
+    if not math.isfinite(kappa) or not -1 <= kappa <= 1:
+        return f"kappa {kappa!r} is not a finite value in [-1, 1]"
+    if kappa < KAPPA_MIN:
+        return f"kappa {kappa:.3f} < {KAPPA_MIN}"
+    return None
 
 
 def compute_p5(obs, seed, kappa, n_boot=N_BOOT):
@@ -551,25 +689,34 @@ def compute_p5(obs, seed, kappa, n_boot=N_BOOT):
         ("below", 0.30, False),
         "`assume` disclosure; supported: >= 0.60, CI clear of < 0.30; falsified: CI < 0.30",
     )
-    c = mean_component(
-        "P5c",
-        task_differences(arb, lambda o: o.arm == "assume", lambda o: o.arm == "plain"),
-        n_boot,
-        seed,
-        ("abs_below", 0.10),
-        ("abs_above", 0.15, False),
-        "satisfaction assume minus plain; supported: |d| < 0.10, CI within ±0.15; falsified: CI beyond ±0.15",
-    )
+    rule_c = "satisfaction assume minus plain; supported: |d| < 0.10, CI within ±0.15; falsified: CI beyond ±0.15"
+
+    def make(label):
+        rows = [o for o in obs if o.label == label and o.channel == "none"]
+        values = task_differences(rows, lambda o: o.arm == "assume", lambda o: o.arm == "plain")
+        return mean_component(
+            f"P5c[{label}]", values, n_boot, seed, ("abs_below", 0.10), ("abs_above", 0.15, False), rule_c
+        )
+
+    c = stratified("P5c", rule_c + STRATA_RULE, make)
     components = [a, b, c]
     verdict = combine(components)
-    note = ""
-    if kappa is None:
-        verdict, note = "inconclusive", "no disclosure-audit kappa provided; P5 cannot resolve (§3.1)"
-    elif kappa < KAPPA_MIN:
-        verdict, note = "inconclusive", f"kappa {kappa:.3f} < {KAPPA_MIN}; P5 reported inconclusive (§3.1)"
-    out = {"id": "P5", "components": components, "verdict": verdict, "kappa": kappa, "unjudged_decisions": unjudged}
-    if note:
-        out["note"] = note
+    reasons = []
+    if unjudged:
+        reasons.append(f"{unjudged} of {len(arb)} eligible decision(s) unjudged")
+    problem = kappa_problem(kappa)
+    if problem:
+        reasons.append(problem)
+    out = {
+        "id": "P5",
+        "components": components,
+        "verdict": "inconclusive" if reasons else verdict,
+        "kappa": kappa,
+        "eligible_decisions": len(arb),
+        "unjudged_decisions": unjudged,
+    }
+    if reasons:
+        out["note"] = "P5 cannot resolve: " + "; ".join(reasons) + " (§3.1, §3.2)"
     return out
 
 
@@ -728,8 +875,21 @@ def author_split(p1, tasks_dir):
 # ---------------------------------------------------------------- driver and output
 
 
-def analyze(records, seed=0, kappa=None, n_boot=N_BOOT, tasks_dir=None):
-    counted, infra = select_counted(records)
+def withhold(predictions, status):
+    """Replace every prediction, component and stratum verdict by the run status (`invalid` or
+    `pending_review`); estimates stay, labelled descriptive only."""
+    label = f"descriptive only: run {status} (§2.4)"
+    for p in predictions:
+        p["verdict"] = status
+        p["label"] = label
+        for c in p["components"]:
+            c["verdict"] = status
+            for sub in (c.get("strata") or {}).values():
+                sub["verdict"] = status
+
+
+def analyze(records, seed=0, kappa=None, n_boot=N_BOOT, tasks_dir=None, confinement_review=None):
+    counted, infra = select_counted(records, confinement_review)
     e1, missing_e1 = observations(counted, "E1")
     e2, missing_e2 = observations(counted, "E2")
     e3, missing_e3 = (
@@ -744,30 +904,37 @@ def analyze(records, seed=0, kappa=None, n_boot=N_BOOT, tasks_dir=None):
         ),
     )
     infra["missing_results"] = {"E1": missing_e1, "E2": missing_e2, "E3": missing_e3}
+    validity = infra.pop("validity")
     e1_tasks = len({o.task for o in e1})
     warnings = []
     if e1 and e1_tasks < BANK_MIN_TASKS:
         warnings.append(f"E1 has {e1_tasks} tasks; the spec's minimum bank is {BANK_MIN_TASKS}")
-    if not infra["gates"]["infrastructure_rate_at_most_5pct"]:
-        warnings.append("infrastructure-failure rate exceeds 5%: the run is invalid (§2.4)")
-    if not infra["gates"]["runtime_matches_request"]:
-        warnings.append("a counted trial's runtime does not match the request: the run is invalid (§2.4)")
-    if infra["gates"]["confinement_signals_need_review"]:
-        warnings.append("confinement signals recorded: review by hand before accepting the run (§2.4)")
+    warnings += [f"validity gate failed: {f}" for f in validity["failed_gates"]]
+    if validity["status"] == "invalid":
+        warnings.append("the run is invalid (§2.4): every prediction is reported as invalid")
+    if validity["unreviewed_confinement_signals"]:
+        warnings.append(
+            f"{validity['unreviewed_confinement_signals']} confinement signal(s) not covered by the hand review; "
+            "verdicts are withheld until confinement_review.json covers them (§2.4)"
+        )
     if infra["duplicate_attempt_numbers"]:
         warnings.append("duplicate attempt numbers for one seed; the last line was used")
     predictions = [
-        compute_p1(e1, seed, n_boot),
+        compute_p1(e1, seed, n_boot, n_tasks=e1_tasks),
         compute_p2(e1, seed, n_boot),
         compute_p3(e1, seed, n_boot),
         compute_p4(e1, seed, n_boot),
         compute_p5(e2, seed, kappa, n_boot),
         compute_p6(e3, seed, n_boot),
     ]
+    if validity["status"] != "valid":
+        withhold(predictions, validity["status"])
     result = {
         "analysis_version": ANALYSIS_VERSION,
         "seed": seed,
         "n_boot": n_boot,
+        "status": validity["status"],
+        "validity": validity,
         "experiments": sorted({r.get("experiment") for r in counted if r.get("experiment")}),
         "infrastructure": infra,
         "warnings": warnings,
@@ -795,32 +962,56 @@ def _ci(ci, pct=False):
 PCT_COMPONENTS = {"P1a", "P2", "P3", "P4", "P5c", "P6-B2", "P6-B4"}
 
 
+def _component_rows(c):
+    """Markdown rows for a component, one per stratum for stratified components."""
+    if "strata" in c:
+        rows = []
+        for sub in c["strata"].values():
+            rows += _component_rows(sub)
+        extra = f"{c['unidentified_count']} unidentified decision(s)" if "unidentified_count" in c else ""
+        if c.get("note"):
+            extra = f"{extra}; {c['note']}" if extra else c["note"]
+        rows.append(f"| {c['name']} (both strata) | – | – | – | {extra} | {c['verdict']} |")
+        return rows
+    pct = c["name"].split("[")[0] in PCT_COMPONENTS
+    if c["name"] == "P1a":
+        detail = (
+            f"{c['positive_tasks']}+ / {c['negative_tasks']}− / {c['tied_tasks']} tied of {c['sign_test_tasks']}, "
+            f"need {c['critical_count'] if c['critical_count'] is not None else 'unreachable'}; "
+            f"p+ = {c['sign_test_p_positive']:.4f}, p− = {c['sign_test_p_negative']:.4f}"
+        )
+    elif c["name"].startswith("P6"):
+        detail = f"90% CI {_ci(c['ci90'], True)}, {c['n_trials']} trials"
+    elif "n" in c:
+        detail = f"{c['successes']}/{c['n']}"
+    else:
+        detail = c.get("note", "")
+    tasks = c.get("n_tasks", "–")
+    return [
+        f"| {c['name']} | {_fmt(c['estimate'], pct)} | {_ci(c['ci95'], pct)} | {tasks} | {detail} | {c['verdict']} |"
+    ]
+
+
 def to_markdown(result):
     lines = [
         f"Analysis v{result['analysis_version']}, seed {result['seed']}, {result['n_boot']} bootstrap resamples.",
         "",
+        f"**Run status: {result['status']}.**",
     ]
-    lines += ["| Prediction | Verdict |", "|---|---|"]
+    if result["status"] != "valid":
+        lines.append(
+            f"No prediction is supported or falsified; every verdict is `{result['status']}`, and the numbers "
+            "below are descriptive only (§2.4)."
+        )
+        lines += [f"- {f}" for f in result["validity"]["failed_gates"]]
+    lines += ["", "| Prediction | Verdict |", "|---|---|"]
     for p in result["predictions"]:
         note = f" ({p['note']})" if p.get("note") else ""
         lines.append(f"| {p['id']} | {p['verdict']}{note} |")
     lines += ["", "| Component | Estimate | 95% CI | Tasks | Detail | Verdict |", "|---|---|---|---|---|---|"]
     for p in result["predictions"]:
         for c in p["components"]:
-            pct = c["name"] in PCT_COMPONENTS
-            if c["name"] == "P1a":
-                detail = f"{c['positive_tasks']}+ / {c['negative_tasks']}−, sign p = {c['sign_test_p']:.4f}"
-            elif c["name"].startswith("P6"):
-                detail = f"90% CI {_ci(c['ci90'], True)}, {c['n_trials']} trials"
-            elif "n" in c:
-                detail = f"{c['successes']}/{c['n']}"
-            else:
-                detail = ""
-            tasks = c.get("n_tasks", "–")
-            lines.append(
-                f"| {c['name']} | {_fmt(c['estimate'], pct)} | {_ci(c['ci95'], pct)} | {tasks} | {detail} "
-                f"| {c['verdict']} |"
-            )
+            lines += _component_rows(c)
     p1a = result["predictions"][0]["components"][0]
     if p1a["per_task"]:
         lines += ["", "| Task | P1 effect (settled − unsettled, arbitrary) |", "|---|---|"]
@@ -833,11 +1024,15 @@ def to_markdown(result):
         f"| Distinct trials | {infra['distinct_trials']} |",
         f"| Counted trials | {infra['counted_trials']} |",
         f"| Infrastructure-failed attempts | {infra['infrastructure_failed_attempts']} "
-        f"({100 * infra['infrastructure_rate']:.1f}%) |",
+        f"({100 * infra['infrastructure_rate']:.1f}% of distinct trials) |",
         f"| Reruns | {infra['reruns']} |",
         f"| Unresolved after rerun | {infra['unresolved_after_rerun']} |",
         f"| Agent failures | {sum(infra['agent_failures_by_type'].values())} {infra['agent_failures_by_type'] or ''} |",
         f"| Missing decision results | {infra['missing_results']} |",
+        f"| Runtime mismatches / unknown | {infra['runtime_mismatches']} / {infra['runtime_match_unknown']} |",
+        f"| Spec files changed / unknown | {infra['spec_files_tampered']} / {infra['spec_files_integrity_unknown']} |",
+        f"| Confinement signals / recorded violations | {infra['confinement_signals']} / "
+        f"{infra['confinement_violations_recorded']} |",
     ]
     if result["warnings"]:
         lines += ["", "Warnings:", ""] + [f"- {w}" for w in result["warnings"]]
@@ -850,6 +1045,12 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=0, help="bootstrap seed (default 0)")
     parser.add_argument("--kappa", type=float, default=None, help="disclosure-audit Cohen's kappa for P5")
     parser.add_argument("--tasks-dir", type=Path, default=None, help="task bank, for the descriptive author split")
+    parser.add_argument(
+        "--confinement-review",
+        type=Path,
+        default=None,
+        help="hand review of confinement signals (default: <run_dir>/confinement_review.json if present)",
+    )
     parser.add_argument("--n-boot", type=int, default=N_BOOT, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     trials = args.run_dir / "trials.jsonl"
@@ -858,8 +1059,17 @@ def main(argv=None):
     try:
         if kappa is None and audit.exists():
             kappa = read_json(audit).get("kappa")
+        review_path = args.confinement_review or args.run_dir / "confinement_review.json"
+        review = read_json(review_path) if args.confinement_review or review_path.exists() else None
+        if review is not None and not isinstance(review, dict):
+            raise ValueError(f"{review_path}: expected a JSON object")
         result = analyze(
-            load_records(trials), seed=args.seed, kappa=kappa, n_boot=args.n_boot, tasks_dir=args.tasks_dir
+            load_records(trials),
+            seed=args.seed,
+            kappa=kappa,
+            n_boot=args.n_boot,
+            tasks_dir=args.tasks_dir,
+            confinement_review=review,
         )
         result["input_sha256"] = hashlib.sha256(trials.read_bytes()).hexdigest()
         markdown = to_markdown(result)

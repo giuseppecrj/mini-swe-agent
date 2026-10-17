@@ -55,27 +55,32 @@ def record(
         "confinement_signals": [],
         "attempt": attempt,
         "runtime_matches_request": True,
+        "spec_files_intact": True,
     }
     if disclosed is not None:
         out["disclosed"] = disclosed
     return out
 
 
-def e1_records(outcome, n_tasks=12, n_trials=16, seed=0):
-    """Balanced E1 records. outcome(rng, task, decision, label, channel, filler, sib) -> bool."""
+def e1_records(outcome, n_tasks=12, n_trials=16, seed=0, labels=None):
+    """Balanced E1 records. outcome(rng, task, decision, label, channel, filler, sib) -> bool.
+    labels(task) -> {decision: label} overrides the default LABELS per task."""
     rng = random.Random(f"e1-records:{seed}")
     records = []
     trial_seed = 0
     for t in range(n_tasks):
         task = f"task{t:02d}"
-        design, _ = generate_design(len(LABELS), n_trials, rng)
+        task_labels = labels(task) if labels else LABELS
+        design, _ = generate_design(len(task_labels), n_trials, rng)
         for filler, channels in design:
-            chans = dict(zip(LABELS, channels))
+            chans = dict(zip(task_labels, channels))
             res = {}
-            for i, (d, label) in enumerate(LABELS.items()):
+            for i, (d, label) in enumerate(task_labels.items()):
                 checks = sum(1 for j, c in enumerate(channels) if j != i and c in ("check", "both"))
                 res[d] = bool(outcome(rng, task, d, label, chans[d], filler, checks / (len(channels) - 1)))
-            records.append(record("E1", trial_seed, {task: chans}, {task: res}, filler=filler))
+            rec = record("E1", trial_seed, {task: chans}, {task: res}, filler=filler)
+            rec["labels"] = {task: dict(task_labels)}
+            records.append(rec)
             trial_seed += 1
     return records
 
@@ -95,34 +100,67 @@ def verdicts(result):
         out[p["id"]] = p["verdict"]
         for c in p["components"]:
             out[c["name"]] = c["verdict"]
+            for sub in (c.get("strata") or {}).values():
+                out[sub["name"]] = sub["verdict"]
     return out
 
 
+def stratum(result, index, label):
+    return result["predictions"][index]["components"][-1]["strata"][label]
+
+
+def perfect(rng, task, decision, label, channel, filler, sib):
+    """Settled decisions always satisfied; unsettled arbitrary never; unsettled inferable/preserve always."""
+    return channel != "none" or label != "arbitrary"
+
+
 class SignTestTests(unittest.TestCase):
-    def brute(self, effects):
-        signs = [e for e in effects if e != 0]
-        n = len(signs)
-        observed = abs(sum(1 for e in signs if e > 0) - n / 2)
-        extreme = sum(1 for bits in itertools.product((0, 1), repeat=n) if abs(sum(bits) - n / 2) >= observed)
-        return extreme / 2**n if n else 1.0
+    def brute_tail(self, k, n):
+        return sum(1 for bits in itertools.product((0, 1), repeat=n) if sum(bits) >= k) / 2**n
 
-    def test_exact_small_examples(self):
-        self.assertAlmostEqual(analysis.sign_test([1] * 5)[2], 2 / 32)
-        self.assertAlmostEqual(analysis.sign_test([1] * 6)[2], 2 / 64)
-        self.assertAlmostEqual(analysis.sign_test([1] * 5 + [-1])[2], 2 * 7 / 64)
-        self.assertEqual(analysis.sign_test([0, 0])[2], 1.0)
-        self.assertEqual(analysis.sign_test([1, -1])[2], 1.0)
-        self.assertEqual(analysis.sign_test([0.5, 0, -0.2, 0.1]), (2, 1, 1.0))
-
-    def test_matches_enumeration(self):
+    def test_exact_one_sided_tails(self):
+        self.assertAlmostEqual(analysis.sign_test([1] * 6)["p_positive"], 1 / 64)
+        self.assertAlmostEqual(analysis.sign_test([1] * 5 + [-1])["p_positive"], 7 / 64)
+        self.assertAlmostEqual(analysis.sign_test([1] * 5 + [-1])["p_negative"], 63 / 64)
+        self.assertEqual(analysis.sign_test([0.5, 0, -0.2, 0.1])["ties"], 1)
         rng = random.Random(3)
         for n in range(1, 13):
             effects = [rng.choice((-0.3, 0.0, 0.2, 0.4)) for _ in range(n)]
-            self.assertAlmostEqual(analysis.sign_test(effects)[2], self.brute(effects), places=12)
+            test = analysis.sign_test(effects)
+            self.assertAlmostEqual(test["p_positive"], self.brute_tail(test["positive"], n), places=12)
+            self.assertAlmostEqual(test["p_negative"], self.brute_tail(test["negative"], n), places=12)
 
-    def test_twelve_tasks_need_ten_positive(self):
-        self.assertLess(analysis.sign_test([1] * 10 + [-1] * 2)[2], 0.05)
-        self.assertGreater(analysis.sign_test([1] * 9 + [-1] * 3)[2], 0.05)
+    def test_critical_counts(self):
+        # One-sided p < 0.025 over all tasks: 10 of 12, 9 of 10, 6 of 6; none reachable with 5 tasks.
+        self.assertEqual(analysis.sign_test([1] * 12)["critical"], 10)
+        self.assertEqual(analysis.sign_test([1] * 10)["critical"], 9)
+        self.assertEqual(analysis.sign_test([1] * 6)["critical"], 6)
+        self.assertIsNone(analysis.sign_test([1] * 5)["critical"])
+
+    def test_ties_count_against_the_tested_direction(self):
+        # Regression (T5 review, finding 4): dropping ties made 9 positive + 3 tied look like p = 0.004.
+        test = analysis.sign_test([0.5] * 9 + [0.0] * 3)
+        self.assertEqual((test["positive"], test["ties"], test["n"]), (9, 3, 12))
+        self.assertGreater(test["p_positive"], 0.025)
+        self.assertLess(analysis.sign_test([0.5] * 10 + [0.0] * 2)["p_positive"], 0.025)
+        # Tasks without a computable effect are ties too.
+        self.assertEqual(analysis.sign_test([0.5] * 9, n_total=12)["ties"], 3)
+
+    def test_p1a_ties_block_support_and_falsification(self):
+        def outcome(direction):
+            def fn(rng, task, decision, label, channel, filler, sib):
+                if label != "arbitrary" or int(task[-2:]) >= 9:  # tasks 9-11: no effect, a tie
+                    return True
+                return (channel != "none") == direction
+
+            return fn
+
+        up = analysis.analyze(e1_records(outcome(True)), seed=1, n_boot=200)
+        p1a = up["predictions"][0]["components"][0]
+        self.assertEqual((p1a["positive_tasks"], p1a["tied_tasks"], p1a["critical_count"]), (9, 3, 10))
+        self.assertEqual(p1a["verdict"], "inconclusive")
+        down = analysis.analyze(e1_records(outcome(False)), seed=1, n_boot=200)
+        self.assertEqual(verdicts(down)["P1a"], "inconclusive")
 
 
 class HelperTests(unittest.TestCase):
@@ -169,13 +207,15 @@ class HelperTests(unittest.TestCase):
 
 class E1PredictionTests(unittest.TestCase):
     def test_clean_strong_effect_supports_p1_to_p4(self):
-        def outcome(rng, task, decision, label, channel, filler, sib):
-            return channel != "none" or label != "arbitrary"
-
-        result = analysis.analyze(e1_records(outcome), seed=1)
+        result = analysis.analyze(e1_records(perfect), seed=1)
         v = verdicts(result)
+        self.assertEqual(result["status"], "valid")
         for key in ("P1", "P1a", "P1b", "P1c", "P2", "P3", "P4"):
             self.assertEqual(v[key], "supported", key)
+        for key in ("P2", "P3", "P4"):
+            for label in ("arbitrary", "inferable"):
+                self.assertEqual(v[f"{key}[{label}]"], "supported", (key, label))
+        self.assertEqual(result["predictions"][3]["unidentified_count"], 0)
         p1a = result["predictions"][0]["components"][0]
         self.assertEqual(p1a["estimate"], 1.0)
         self.assertEqual((p1a["positive_tasks"], p1a["negative_tasks"]), (12, 0))
@@ -218,7 +258,7 @@ class E1PredictionTests(unittest.TestCase):
 
         result = analysis.analyze(e1_records(outcome), seed=1, n_boot=500)
         self.assertEqual(verdicts(result)["P2"], "falsified")
-        self.assertEqual(result["predictions"][1]["components"][0]["estimate"], 1.0)
+        self.assertEqual(stratum(result, 1, "arbitrary")["estimate"], 1.0)
 
     def test_filler_effect_falsifies_p3(self):
         def outcome(rng, task, decision, label, channel, filler, sib):
@@ -234,7 +274,7 @@ class E1PredictionTests(unittest.TestCase):
 
         result = analysis.analyze(e1_records(outcome), seed=1, n_boot=500)
         self.assertEqual(verdicts(result)["P4"], "falsified")
-        self.assertEqual(result["predictions"][3]["components"][0]["estimate"], 1.0)
+        self.assertEqual(stratum(result, 3, "arbitrary")["estimate"], 1.0)
 
     def test_moderate_gaps_are_inconclusive(self):
         # A 15 pp check-only shortfall in half the tasks: neither within 10 pp nor clearly beyond 20 pp.
@@ -263,6 +303,91 @@ class E1PredictionTests(unittest.TestCase):
         self.assertTrue(any("minimum bank" in w for w in result["warnings"]))
 
 
+class StrataTests(unittest.TestCase):
+    """Regression (T5 review, finding 1): P2-P4 and P5(c) must hold in both the arbitrary and inferable strata."""
+
+    def test_inferable_only_effects_block_p2_p3_p4(self):
+        def channel_gap(rng, task, decision, label, channel, filler, sib):
+            if label == "inferable":
+                return channel in ("contract", "both", "none")
+            return perfect(rng, task, decision, label, channel, filler, sib)
+
+        def filler_gap(rng, task, decision, label, channel, filler, sib):
+            if label == "inferable" and channel == "none":
+                return filler
+            return perfect(rng, task, decision, label, channel, filler, sib)
+
+        def spillover(rng, task, decision, label, channel, filler, sib):
+            if label == "inferable" and channel == "none":
+                return sib >= 0.5
+            return perfect(rng, task, decision, label, channel, filler, sib)
+
+        for outcome, key in ((channel_gap, "P2"), (filler_gap, "P3"), (spillover, "P4")):
+            v = verdicts(analysis.analyze(e1_records(outcome), seed=1, n_boot=500))
+            self.assertEqual(v[f"{key}[arbitrary]"], "supported", key)
+            self.assertEqual(v[f"{key}[inferable]"], "falsified", key)
+            self.assertEqual(v[key], "falsified", key)
+            self.assertEqual(v["P1"], "supported", key)
+
+    def test_preserve_effects_are_descriptive_only(self):
+        def outcome(rng, task, decision, label, channel, filler, sib):
+            if label == "preserve":
+                return channel in ("contract", "both")
+            return perfect(rng, task, decision, label, channel, filler, sib)
+
+        result = analysis.analyze(e1_records(outcome), seed=1, n_boot=500)
+        self.assertEqual(verdicts(result)["P2"], "supported")
+        preserve = result["descriptive"]["E1"]["rates_by_label_and_channel"]["preserve"]
+        self.assertEqual(preserve["check"]["rate"], 0.0)
+
+    def test_stratum_with_one_task_is_inconclusive(self):
+        def labels(task):
+            if task == "task00":
+                return LABELS
+            return {d: ("arbitrary" if label == "inferable" else label) for d, label in LABELS.items()}
+
+        result = analysis.analyze(e1_records(perfect, labels=labels), seed=1, n_boot=500)
+        v = verdicts(result)
+        for key in ("P2", "P3", "P4"):
+            self.assertEqual(v[f"{key}[arbitrary]"], "supported", key)
+            self.assertEqual(v[f"{key}[inferable]"], "inconclusive", key)
+            self.assertEqual(v[key], "inconclusive", key)
+            self.assertEqual(stratum(result, int(key[1]) - 1, "inferable")["n_tasks"], 1)
+
+    def test_p4_unidentified_decision_blocks_support(self):
+        # Regression (T5 review, finding 5): a decision missing an exposure side must stop P4 being supported.
+        records = e1_records(perfect)
+        changed = 0
+        for rec in records:
+            chans = rec["channels"].get("task00")
+            if chans and chans["d0"] == "none":
+                others = [c for d, c in chans.items() if d != "d0"]
+                if sum(c in ("check", "both") for c in others) / len(others) >= 0.6:
+                    chans["d0"] = "contract"
+                    changed += 1
+        self.assertGreater(changed, 0)
+        result = analysis.analyze(records, seed=1, n_boot=500)
+        p4 = result["predictions"][3]
+        self.assertEqual(p4["unidentified_count"], 1)
+        self.assertEqual(p4["components"][0]["unidentified_decisions"], {"arbitrary": ["task00/d0"], "inferable": []})
+        self.assertEqual(verdicts(result)["P4[arbitrary]"], "supported")
+        self.assertEqual(p4["verdict"], "inconclusive")
+        self.assertIn("cannot be supported", p4["components"][0]["note"])
+
+    def test_p4_unidentified_decision_still_allows_falsification(self):
+        def outcome(rng, task, decision, label, channel, filler, sib):
+            return channel != "none" or sib >= 0.5
+
+        records = e1_records(outcome)
+        for rec in records:
+            chans = rec["channels"].get("task00")
+            if chans and chans["d0"] == "none":
+                chans["d0"] = "contract"
+        result = analysis.analyze(records, seed=1, n_boot=500)
+        self.assertEqual(result["predictions"][3]["unidentified_count"], 1)
+        self.assertEqual(verdicts(result)["P4"], "falsified")
+
+
 class InfrastructureTests(unittest.TestCase):
     def test_final_attempt_per_seed_is_counted(self):
         def outcome(rng, task, decision, label, channel, filler, sib):
@@ -289,7 +414,8 @@ class InfrastructureTests(unittest.TestCase):
         self.assertEqual(infra["reruns"], 2)
         self.assertEqual(infra["unresolved_after_rerun"], 1)
         self.assertAlmostEqual(infra["infrastructure_rate"], 3 / len(clean))
-        self.assertTrue(infra["gates"]["infrastructure_rate_at_most_5pct"])
+        self.assertEqual(result["status"], "valid")
+        self.assertTrue(result["validity"]["gates"]["infrastructure_rate_at_most_5pct"])
         # The junk attempt was dropped, so the clean effect survives intact.
         self.assertEqual(result["predictions"][0]["components"][1]["estimate"], 1.0)
 
@@ -307,8 +433,9 @@ class InfrastructureTests(unittest.TestCase):
         recs[5]["runtime_matches_request"] = False
         _, infra = analysis.select_counted(recs)
         self.assertEqual(infra["counted_trials"], 8)
-        self.assertFalse(infra["gates"]["infrastructure_rate_at_most_5pct"])
-        self.assertFalse(infra["gates"]["runtime_matches_request"])
+        self.assertFalse(infra["validity"]["gates"]["infrastructure_rate_at_most_5pct"])
+        self.assertFalse(infra["validity"]["gates"]["runtime_matches_request"])
+        self.assertEqual(infra["validity"]["status"], "invalid")
 
     def test_agent_failures_are_counted_not_excluded(self):
         recs = [
@@ -317,6 +444,88 @@ class InfrastructureTests(unittest.TestCase):
         _, infra = analysis.select_counted(recs)
         self.assertEqual(infra["counted_trials"], 3)
         self.assertEqual(infra["agent_failures_by_type"], {"timeout": 3})
+
+
+class InvalidRunTests(unittest.TestCase):
+    """Regression (T5 review, finding 3): a failed §2.4 gate makes every verdict `invalid`."""
+
+    def assert_invalid(self, result, reason):
+        self.assertEqual(result["status"], "invalid")
+        self.assertTrue(any(reason in f for f in result["validity"]["failed_gates"]), result["validity"])
+        v = verdicts(result)
+        self.assertEqual(set(v.values()), {"invalid"}, v)
+        self.assertEqual(result["predictions"][0]["label"], "descriptive only: run invalid (§2.4)")
+        self.assertEqual(result["predictions"][0]["components"][1]["estimate"], 1.0)  # numbers remain
+        markdown = analysis.to_markdown(result)
+        self.assertIn("**Run status: invalid.**", markdown)
+        self.assertNotIn("| supported", markdown)
+
+    def test_missing_runtime_field_invalidates(self):
+        records = e1_records(perfect)
+        del records[3]["runtime_matches_request"]
+        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "runtime_matches_request")
+
+    def test_runtime_mismatch_invalidates(self):
+        records = e1_records(perfect)
+        records[3]["runtime_matches_request"] = False
+        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "runtime_matches_request")
+
+    def test_infrastructure_denominator_is_distinct_trials(self):
+        # 19 distinct trials, one failed first attempt rerun successfully: 1/19 = 5.3% > 5% fails the gate,
+        # although failed attempts / all attempts would be 1/20 = 5%.
+        records = e1_records(perfect, n_tasks=12, n_trials=8)
+        base = [r for r in records if r["seed"] < 19]
+        failed = dict(base[0], infrastructure_failure="provider_error")
+        rerun = dict(base[0], attempt=2)
+        result = analysis.analyze([failed, rerun, *base[1:]], seed=1, n_boot=200)
+        self.assertEqual(result["infrastructure"]["distinct_trials"], 19)
+        self.assert_invalid(result, "infrastructure-failure rate")
+        # 20 distinct trials with one failure: exactly 5% passes.
+        base = [r for r in records if r["seed"] < 20]
+        failed = dict(base[0], infrastructure_failure="provider_error")
+        rerun = dict(base[0], attempt=2)
+        self.assertEqual(analysis.analyze([failed, rerun, *base[1:]], seed=1, n_boot=200)["status"], "valid")
+
+    def test_tampering_invalidates(self):
+        records = e1_records(perfect)
+        records[5]["spec_files_intact"] = False
+        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "prompt.txt or visible checks")
+        records[5]["spec_files_intact"] = True
+        del records[6]["spec_files_intact"]
+        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "integrity unknown")
+
+    def test_tampering_on_an_infrastructure_attempt_invalidates(self):
+        records = e1_records(perfect)
+        failed = dict(records[0], infrastructure_failure="no_settle", spec_files_intact=False)
+        rerun = dict(records[0], attempt=2)
+        result = analysis.analyze([failed, rerun, *records[1:]], seed=1, n_boot=200)
+        self.assert_invalid(result, "prompt.txt or visible checks")
+
+    def test_confirmed_confinement_violation_invalidates(self):
+        records = e1_records(perfect)
+        records[2]["confinement_signals"] = [{"kind": "denied_path", "detail": "read: ../runner.py", "confirmed": True}]
+        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "confinement violation")
+        records[2]["confinement_signals"] = [{"kind": "denied_path", "detail": "read: ../runner.py"}]
+        review = {"signals_reviewed": 1, "confirmed_violations": 1}
+        self.assert_invalid(
+            analysis.analyze(records, seed=1, n_boot=200, confinement_review=review), "confinement violation"
+        )
+
+    def test_unreviewed_signals_withhold_verdicts(self):
+        records = e1_records(perfect)
+        records[2]["confinement_signals"] = [{"kind": "absolute_path", "detail": "read: /etc/hostname"}]
+        result = analysis.analyze(records, seed=1, n_boot=200)
+        self.assertEqual(result["status"], "pending_review")
+        self.assertEqual(set(verdicts(result).values()), {"pending_review"})
+        cleared = analysis.analyze(
+            records, seed=1, n_boot=200, confinement_review={"signals_reviewed": 1, "confirmed_violations": 0}
+        )
+        self.assertEqual(cleared["status"], "valid")
+        self.assertEqual(verdicts(cleared)["P1"], "supported")
+
+    def test_bad_review_is_rejected(self):
+        with self.assertRaises(ValueError):
+            analysis.analyze(e1_records(perfect, n_tasks=2, n_trials=8), confinement_review={"signals_reviewed": "x"})
 
 
 def e2_records(plain_rate, assume_rate, satisfied=lambda rng, arm: rng.random() < 0.3, n_tasks=12, per_arm=4, seed=0):
@@ -359,14 +568,54 @@ class E2PredictionTests(unittest.TestCase):
         v = verdicts(analysis.analyze(records, seed=1, kappa=0.9, n_boot=500))
         self.assertEqual(v["P5c"], "falsified")
 
-    def test_unjudged_decisions_are_excluded(self):
+    def test_unjudged_decisions_are_counted(self):
         records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
         for r in records:
             r.pop("disclosed")
         result = analysis.analyze(records, seed=1, kappa=0.9, n_boot=200)
         p5 = result["predictions"][4]
         self.assertEqual(p5["unjudged_decisions"], 12 * 8 * 2)
+        self.assertEqual(p5["eligible_decisions"], 12 * 8 * 2)
         self.assertEqual(p5["components"][0]["verdict"], "inconclusive")
+        self.assertEqual(p5["verdict"], "inconclusive")
+
+    def test_one_unjudged_decision_makes_p5_inconclusive(self):
+        # Regression (T5 review, finding 2): unjudged decisions were silently excluded and P5 stayed supported.
+        records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
+        task = records[0]["task_ids"][0]
+        del records[0]["disclosed"][task]["d0"]
+        result = analysis.analyze(records, seed=1, kappa=0.9, n_boot=500)
+        p5 = result["predictions"][4]
+        self.assertEqual(p5["unjudged_decisions"], 1)
+        self.assertEqual([c["verdict"] for c in p5["components"]], ["supported"] * 3)
+        self.assertEqual(p5["verdict"], "inconclusive")
+        self.assertIn("unjudged", p5["note"])
+
+    def test_non_finite_or_invalid_kappa_makes_p5_inconclusive(self):
+        # Regression (T5 review, finding 2): NaN < 0.6 is False, so NaN used to pass the kappa gate.
+        records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
+        for kappa in (math.nan, math.inf, -math.inf, "0.9", True, 1.5):
+            result = analysis.analyze(records, seed=1, kappa=kappa, n_boot=200)
+            self.assertEqual(result["predictions"][4]["verdict"], "inconclusive", kappa)
+        self.assertEqual(
+            analysis.analyze(records, seed=1, kappa=0.6, n_boot=200)["predictions"][4]["verdict"], "supported"
+        )
+
+    def test_inferable_only_satisfaction_change_blocks_p5c(self):
+        # Regression (T5 review, finding 1): P5(c) is evaluated in both strata.
+        rng = random.Random(1)
+        records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
+        for r in records:
+            if r["arm"] == "plain":
+                task = r["task_ids"][0]
+                for d, label in LABELS.items():
+                    if label == "inferable":
+                        r["decision_results"][task][d] = rng.random() < 0.5
+        v = verdicts(analysis.analyze(records, seed=1, kappa=0.9, n_boot=500))
+        self.assertEqual(v["P5c[arbitrary]"], "supported")
+        self.assertEqual(v["P5c[inferable]"], "falsified")
+        self.assertEqual(v["P5c"], "falsified")
+        self.assertEqual(v["P5"], "falsified")
 
 
 def e3_records(single_rates, n_single, multi, seed=0):
@@ -460,6 +709,25 @@ class CliTests(unittest.TestCase):
         self.assertIn("| P1a |", markdown)
         self.assertEqual(out.getvalue(), markdown)
         self.assertTrue(math.isclose(result["infrastructure"]["infrastructure_rate"], 0.0))
+
+    def test_cli_reads_confinement_review(self):
+        records = e1_records(perfect, n_tasks=10, n_trials=8)
+        records[0]["confinement_signals"] = [{"kind": "home_path", "detail": "bash: ~"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "trials.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                analysis.main([str(run), "--n-boot", "100"])
+            self.assertEqual(
+                json.loads((run / "analysis.json").read_text(encoding="utf-8"))["status"], "pending_review"
+            )
+            review = {"signals_reviewed": 1, "confirmed_violations": 1}
+            (run / "confinement_review.json").write_text(json.dumps(review), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                analysis.main([str(run), "--n-boot", "100"])
+            result = json.loads((run / "analysis.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["status"], "invalid")
+        self.assertEqual(result["predictions"][0]["verdict"], "invalid")
 
     def test_cli_reports_malformed_input(self):
         with tempfile.TemporaryDirectory() as tmp:
