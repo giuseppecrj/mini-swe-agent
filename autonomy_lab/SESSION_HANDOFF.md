@@ -154,18 +154,20 @@ https://pi.dev/docs/latest/cli
 https://pi.dev/docs/latest/cli-integration
 https://pi.dev/docs/latest/json
 
-### Step D — the FIRST real test
+### Step D — the FIRST real test (completed 2026-10-17; see section 8)
 
 From the repository root in a local shell (or ask the interactive Pi coordinator to run it):
 
     python3 -m autonomy_lab.pi_runner \
+      --model openai-codex/gpt-5.6-sol \
+      --thinking high \
       --breadths 1 \
       --depths deep \
       --verifications rich \
       --repetitions 1 \
       --timeout 300
 
-This makes ONE authenticated Pi agent call and uses the currently configured Pi model, unless --model is explicitly set. Model/usage details, when emitted by Pi, are recorded in the trial metadata. Allow for provider account usage/cost; the adapter enforces a wall-clock limit, NOT a hard spending limit.
+This makes ONE authenticated Pi agent call. --model (exact provider/model-id) and --thinking are required: Pi's configured default was an extension-provided provider that is unavailable under --no-extensions, so an unpinned run would have silently used a different model. A trial is accepted only if every assistant message reports the requested model and thinking level. Model/usage details, when emitted by Pi, are recorded in the trial metadata. Allow for provider account usage/cost; the adapter enforces a wall-clock limit, NOT a hard spending limit.
 
 Every execution creates an independent, timestamped results directory:
 
@@ -173,17 +175,21 @@ Every execution creates an independent, timestamped results directory:
     autonomy_lab/local-results/run-*/trials.jsonl
     autonomy_lab/local-results/run-*/summary.json
     autonomy_lab/local-results/run-*/summary.csv
-    autonomy_lab/local-results/run-*/workspaces/<trial-id>/pi-events.jsonl
-    autonomy_lab/local-results/run-*/workspaces/<trial-id>/pi-stderr.log
+    autonomy_lab/local-results/run-*/workspaces/<trial-id>/   (agent working directory)
+    autonomy_lab/local-results/run-*/logs/<trial-id>/pi-events.jsonl
+    autonomy_lab/local-results/run-*/logs/<trial-id>/pi-stderr.log
+
+Harness logs live outside the agent's working directory, so they no longer show up in its file listings. This prevents accidental exposure only: an agent that deliberately reads ../../logs can still reach them, just as it can reach the held-out grader source. (In the two runs before this change, the logs were inside the workspace.)
 
 Do not commit local event logs. They may contain private model output.
 
 ### Step E — only after evaluating the first test, run a pilot
 
-Choose and pin ONE model that your local Pi can actually use:
+The pinned pilot model is openai-codex/gpt-5.6-sol at --thinking high (user-approved 2026-10-17):
 
     python3 -m autonomy_lab.pi_runner \
-      --model provider/model-id \
+      --model openai-codex/gpt-5.6-sol \
+      --thinking high \
       --breadths 1,2 \
       --depths shallow,deep \
       --verifications basic,rich \
@@ -215,7 +221,7 @@ Potential improvements after first live run:
 ## 6. Do not claim
 
 - That ChatGPT established a connection to the user's local computer.
-- That a local Pi benchmark already ran or used the user's real account.
+- That the single accepted real trial (section 8) measures a success rate or supports any depth/verification effect.
 - That passing the cloud mock smoke suite proves any autonomy-performance improvement.
 - That the proposed q-model is an empirical fact.
 - That a locally running Pi CLI guarantees local inference or zero API costs.
@@ -233,3 +239,31 @@ Continue from this exact state without restarting research from scratch.
 5. Only then recommend how to scale the breadth/depth/verifiability experiment.
 
 The end goal is not to optimize agent runtime for its own sake; it is to maximize accepted engineering progress per hour of human engineering attention.
+
+**Status 2026-10-17:** items 1–4 are done (section 8). Item 5 is the open next step.
+
+## 8. First real local Pi results (2026-10-17)
+
+Host: Linux, Python 3.14.7, Pi 1.3.0. Code: experiment/autonomy-lab at bc5d061, i.e. before the runner changes described below. Offline validation passed: 8/8 unit tests, and the mock run rejected all 8 unmodified starters.
+
+Model selection: Pi's configured default (claude-bridge/claude-opus-5-5) is provided by an extension, so it does not exist under the benchmark's --no-extensions isolation. Built-in providers openai-codex, openai, concentrate and meta reported auth ready. Short tool-free probes showed that the ChatGPT-account Codex provider accepts gpt-5.6-sol and gpt-5.6-luna and rejects gpt-5.5 and gpt-5.3-codex-spark.
+
+Condition: breadth=1 (ordered-merge), depth=deep, verification=rich, 1 repetition, timeout 300 s, no human interventions.
+
+| Run ID | Model (requested → observed) | Outcome |
+|---|---|---|
+| run-20261017T130249Z-2d6c5a | openai-codex/gpt-5.5:high → openai-codex/gpt-5.5 | Infrastructure failure, not a capability result. The provider rejected the model on the first request ("not supported when using Codex with a ChatGPT account"); 0 tool calls. Pi exited 0, but the runner correctly marked agent_completed=false. |
+| run-20261017T130316Z-e15424 | openai-codex/gpt-5.6-sol:high → openai-codex/gpt-5.6-sol, thinkingLevel high | **Accepted.** Held-out passed, scope intact, settled, 8.59 s, 4 turns, 5 tool calls, 0 tool errors, 0 retries, 7,251 tokens, provider-reported $0.0188 (probably notional under ChatGPT OAuth; not verified). |
+
+Trajectory of the accepted trial: list the workspace → read the module and visible checks → one edit (order-preserving seen-set loop) → run visible checks once (pass) → stop. No error-correction cycle was needed.
+
+Interpretation: n=1 on the easiest condition. This shows the real pipeline works end to end, not a success rate. The task is near trivial for this model, so a ceiling effect is likely at breadth 1.
+
+Runner problems found and fixed after these runs:
+1. An unpinned run silently used a non-default model while the metadata said "Pi configured default". --model provider/id and --thinking are now required. Acceptance now requires every assistant message to report a provider, model and thinking level that match the request, with no unparseable event lines (tightened after an independent cross-family review).
+2. pi-events.jsonl and pi-stderr.log were written inside the agent's workspace, and the agent listed its own live event log. They now go to run-*/logs/<trial-id>/. This prevents accidental exposure, not deliberate access.
+3. The thinking level was recorded only inside the --model string. It is now requested and observed as separate fields.
+
+Confound noted for the pilot: in the shallow condition, atomic-ledger's held-out checks require behaviour the brief never states (e.g. KeyError for a missing sender, rejecting sender == recipient). Shallow failures there partly measure missing information, not planning depth.
+
+Next falsifiable hypothesis: with gpt-5.6-sol at thinking high, breadth-1 deep conditions accept ≥90% of trials, and any between-condition difference appears only in shallow conditions involving atomic-ledger. If that holds, harder or more numerous tasks are a better investment than more repetitions of these two.

@@ -1,7 +1,8 @@
 """Run controlled Autonomy Lab experiments through the user's installed Pi CLI.
 
-Uses Pi's current authenticated model (or --model), not ChatGPT credentials.
-A local Pi process is NOT a security sandbox: see LOCAL_HANDOFF.md.
+Requires an explicit --model provider/id and --thinking level, so that Pi's
+ambient default model or settings cannot silently change the treatment.
+A local Pi process is NOT a security sandbox: see SESSION_HANDOFF.md.
 """
 
 import argparse
@@ -18,6 +19,20 @@ from pathlib import Path
 
 from autonomy_lab.runner import TASKS, build_prompt, check_candidate, prepare_workspace
 
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def validate_model(model):
+    """Accept only an exact provider/model-id, without Pi's ':<thinking>' shorthand."""
+    provider, _, model_id = (model or "").partition("/")
+    if not provider or not model_id:
+        raise ValueError("--model must be an exact provider/model-id")
+    # Model IDs may legitimately contain ':' (e.g. 'gpt-oss:20b'), so reject
+    # only a trailing thinking-level suffix.
+    if ":" in model_id and model_id.rpartition(":")[2] in THINKING_LEVELS:
+        raise ValueError("pass the thinking level with --thinking, not as a --model suffix")
+    return model
+
 
 def parse_pi_events(path):
     """Extract measurable events without assuming that process exit 0 means model success."""
@@ -32,9 +47,13 @@ def parse_pi_events(path):
         "total_tokens": 0,
         "reported_cost_usd": None,
         "model_ids": [],
+        "thinking_levels": [],
+        "assistant_messages": 0,
+        "assistant_messages_missing_runtime": 0,
         "invalid_json_lines": 0,
     }
     model_ids = set()
+    thinking_levels = set()
     costs = []
     if not path.exists():
         return metrics
@@ -63,42 +82,66 @@ def parse_pi_events(path):
                 message = event.get("message") or {}
                 if message.get("role") != "assistant":
                     continue
+                metrics["assistant_messages"] += 1
                 if message.get("stopReason") in {"error", "aborted", "length"}:
                     metrics["assistant_errors"] += 1
                 provider = message.get("provider")
                 model = message.get("model")
+                thinking = message.get("thinkingLevel")
+                if not (provider and model and thinking):
+                    metrics["assistant_messages_missing_runtime"] += 1
                 if model:
                     model_ids.add((str(provider) + "/" if provider else "") + str(model))
+                if thinking:
+                    thinking_levels.add(str(thinking))
                 usage = message.get("usage") or {}
                 metrics["total_tokens"] += int(usage.get("totalTokens") or 0)
                 total_cost = (usage.get("cost") or {}).get("total")
                 if isinstance(total_cost, (float, int)):
                     costs.append(float(total_cost))
     metrics["model_ids"] = sorted(model_ids)
+    metrics["thinking_levels"] = sorted(thinking_levels)
     if costs:
         metrics["reported_cost_usd"] = round(sum(costs), 6)
     return metrics
 
 
-def pi_command(model, prompt, pi_binary="pi"):
+def pi_command(model, thinking, prompt, pi_binary="pi"):
     # Disable ambient skills, extensions, context files, MCP, and project-local
     # configuration so that a treatment cannot accidentally see the handoff.
-    command = [
+    return [
         pi_binary, "--mode", "json", "--no-session",
         "--no-extensions", "--no-skills", "--no-prompt-templates",
         "--no-context-files", "--no-mcp", "--no-approve",
         "--tools", "read,bash,edit,write",
+        "--model", model, "--thinking", thinking,
+        "--", prompt,
     ]
-    if model:
-        command.extend(["--model", model])
-    command.extend(["--", prompt])
-    return command
 
 
-def execute_pi(workspace, prompt, model, pi_binary, timeout):
-    events_path = workspace / "pi-events.jsonl"
-    stderr_path = workspace / "pi-stderr.log"
-    command = pi_command(model, prompt, pi_binary=pi_binary)
+def runtime_matches_request(run, model, thinking):
+    """True only when every assistant message reports the requested model and thinking.
+
+    A message missing its provider, model or thinking level, or any unparseable
+    event line, counts as unverified rather than as a match.
+    """
+    return (
+        run["assistant_messages"] > 0
+        and run["assistant_messages_missing_runtime"] == 0
+        and run["invalid_json_lines"] == 0
+        and run["model_ids"] == [model]
+        and run["thinking_levels"] == [thinking]
+    )
+
+
+def execute_pi(workspace, log_dir, prompt, model, thinking, pi_binary, timeout):
+    # Harness logs live outside the agent's working directory so they do not
+    # appear in its file listings. This prevents accidental exposure only: an
+    # agent that deliberately reads ../../logs can still find them.
+    log_dir.mkdir(parents=True, exist_ok=True)
+    events_path = log_dir / "pi-events.jsonl"
+    stderr_path = log_dir / "pi-stderr.log"
+    command = pi_command(model, thinking, prompt, pi_binary=pi_binary)
     started = time.monotonic()
     expired = False
     with events_path.open("w", encoding="utf-8") as events, stderr_path.open(
@@ -170,6 +213,9 @@ def run_experiment(args):
         )
     if args.repetitions < 1 or args.timeout < 1:
         raise ValueError("--repetitions and --timeout must be positive")
+    validate_model(args.model)
+    if args.thinking not in THINKING_LEVELS:
+        raise ValueError("--thinking must be one of " + ", ".join(THINKING_LEVELS))
     breadths = [int(x) for x in args.breadths.split(",")]
     depths = args.depths.split(",")
     verifications = args.verifications.split(",")
@@ -185,12 +231,13 @@ def run_experiment(args):
     root = args.out.resolve() / f"run-{label}-{uuid.uuid4().hex[:6]}"
     root.mkdir(parents=True, exist_ok=False)
     (root / "workspaces").mkdir()
+    (root / "logs").mkdir()
     version = pi_version(args.pi_binary)
     metadata = {
         "schema_version": "0.2.0",
         "backend": "pi-local",
         "model_requested": args.model,
-        "model_source": "explicit CLI" if args.model else "Pi configured default",
+        "thinking_requested": args.thinking,
         "pi_version": version,
         "git_commit": git_head(),
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -217,6 +264,7 @@ def run_experiment(args):
                     selected = TASKS[:breadth]
                     trial_id = f"b{breadth}-{depth}-{verification}-r{repetition}"
                     workspace = root / "workspaces" / trial_id
+                    log_dir = root / "logs" / trial_id
                     prepare_workspace(workspace, selected, verification)
                     prompt = build_prompt(selected, depth, verification)
                     prompt_path = workspace / "prompt.txt"
@@ -227,7 +275,8 @@ def run_experiment(args):
                     print("START " + trial_id, flush=True)
                     try:
                         run = execute_pi(
-                            workspace, prompt, args.model, args.pi_binary, args.timeout
+                            workspace, log_dir, prompt, args.model, args.thinking,
+                            args.pi_binary, args.timeout,
                         )
                     except OSError as exc:
                         run = {
@@ -236,7 +285,10 @@ def run_experiment(args):
                             "assistant_errors": 1, "tool_calls": 0, "tool_errors": 0,
                             "assistant_turns": 0, "retries": 0,
                             "total_tokens": 0, "reported_cost_usd": None,
-                            "model_ids": [], "invalid_json_lines": 0,
+                            "model_ids": [], "thinking_levels": [],
+                            "assistant_messages": 0,
+                            "assistant_messages_missing_runtime": 0,
+                            "invalid_json_lines": 0,
                             "stderr_tail": str(exc),
                         }
                     scope_ok = safe_trial_scope(
@@ -250,12 +302,16 @@ def run_experiment(args):
                         and not run["timed_out"]
                         and run["assistant_errors"] == 0
                     )
-                    accepted = passed and complete and scope_ok
+                    runtime_ok = runtime_matches_request(run, args.model, args.thinking)
+                    accepted = passed and complete and scope_ok and runtime_ok
                     record = {
                         "trial_id": trial_id, "breadth": breadth, "depth": depth,
                         "verification": verification, "repetition": repetition,
                         "accepted": accepted, "held_out_tests_passed": passed,
                         "task_scope_intact": scope_ok, "agent_completed": complete,
+                        "runtime_matches_request": runtime_ok,
+                        "model_requested": args.model,
+                        "thinking_requested": args.thinking,
                         "grader_exit_code": grade["exit_code"],
                         **run,
                     }
@@ -286,6 +342,9 @@ def run_experiment(args):
                     "accepted_pct": round(
                         100 * sum(int(t["accepted"]) for t in rows) / len(rows), 2
                     ),
+                    "runtime_mismatches": sum(
+                        int(not t["runtime_matches_request"]) for t in rows
+                    ),
                     "mean_agent_seconds": round(
                         sum(t["seconds"] for t in rows) / len(rows), 2
                     ),
@@ -310,7 +369,14 @@ def run_experiment(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default=None, help="Optional pinned Pi model ID")
+    parser.add_argument(
+        "--model", required=True,
+        help="Exact Pi provider/model-id, e.g. openai-codex/gpt-5.6-sol",
+    )
+    parser.add_argument(
+        "--thinking", required=True, choices=THINKING_LEVELS,
+        help="Pi thinking level, pinned so Pi settings cannot change it",
+    )
     parser.add_argument("--pi-binary", default="pi", help="Path to Pi CLI")
     parser.add_argument("--breadths", default="1,2")
     parser.add_argument("--depths", default="shallow,deep")

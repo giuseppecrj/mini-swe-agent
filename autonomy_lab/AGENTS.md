@@ -12,15 +12,16 @@ This directory is an experiment, not a product feature. You are continuing an ea
    - python3 -m autonomy_lab.runner --backend mock --out autonomy_lab_results
 5. If the user asked to start real testing, execute one bounded trial with the authenticated Pi CLI and report actual results. Never describe mock pass rates as empirical results.
 
-## The first real trial
+## Running a real trial
 
-From the repository root:
+The first real trial has already run (see SESSION_HANDOFF.md, section 8). From the repository root, the same bounded condition is:
 
     python3 -m autonomy_lab.pi_runner \
+      --model openai-codex/gpt-5.6-sol --thinking high \
       --breadths 1 --depths deep --verifications rich \
       --repetitions 1 --timeout 300
 
-This uses the currently authenticated Pi model. For controlled comparisons, pin a model with --model provider/model-id, choosing a model that really exists in the user's Pi CLI.
+--model (exact provider/model-id) and --thinking are required. Pi's configured default is not used, because extension-provided providers are unavailable under --no-extensions. A trial is only accepted when every assistant message reports the requested model and thinking level. Check that a model works with the user's account before a run: ChatGPT-account Codex rejects some catalog models (e.g. gpt-5.5) at request time.
 
 pi_runner.py deliberately launches benchmark children with --no-session --mode json --no-extensions --no-skills --no-prompt-templates --no-context-files --no-mcp --no-approve and a fixed tool allowlist. **Do not inject these handoff instructions into trial prompts.** The interactive coordinator may use Herdr/Pi skills; benchmark children may not.
 

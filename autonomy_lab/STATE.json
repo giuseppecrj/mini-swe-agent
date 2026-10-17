@@ -35,7 +35,7 @@
     ],
     "held_out_acceptance": true,
     "smoke_backend": "mock (no LLM)",
-    "local_real_backend": "pi-local (implemented but NOT yet exercised on user's machine)",
+    "local_real_backend": "pi-local (exercised on user's machine 2026-10-17; see SESSION_HANDOFF.md section 8)",
     "docker_backend": "docker-mini (container built and CLI startup checked in cloud, but real model calls not executed)",
     "cloud_validation": {
       "provider": "GitHub Actions",
@@ -50,16 +50,53 @@
         "artifact upload"
       ]
     },
-    "real_pi_trials_completed": 0,
-    "published_performance_claims": false
+    "real_pi_trials_completed": 1,
+    "published_performance_claims": false,
+    "real_pi_runs": [
+      {
+        "run_id": "run-20261017T130249Z-2d6c5a",
+        "git_commit": "bc5d061aa238b06279579983e905a042da770848",
+        "pi_version": "1.3.0",
+        "model_requested": "openai-codex/gpt-5.5:high",
+        "condition": "b1-deep-rich-r1",
+        "classification": "infrastructure_failure",
+        "accepted": false,
+        "reason": "provider rejected model for ChatGPT-account Codex before any tool call; not a capability result"
+      },
+      {
+        "run_id": "run-20261017T130316Z-e15424",
+        "git_commit": "bc5d061aa238b06279579983e905a042da770848",
+        "pi_version": "1.3.0",
+        "model_requested": "openai-codex/gpt-5.6-sol:high",
+        "model_observed": "openai-codex/gpt-5.6-sol",
+        "thinking_observed": "high",
+        "condition": "b1-deep-rich-r1",
+        "classification": "agent_trial",
+        "accepted": true,
+        "held_out_tests_passed": true,
+        "task_scope_intact": true,
+        "wall_seconds": 8.591,
+        "assistant_turns": 4,
+        "tool_calls": 5,
+        "tool_errors": 0,
+        "retries": 0,
+        "total_tokens": 7251,
+        "reported_cost_usd": 0.018844,
+        "human_interventions": 0
+      }
+    ],
+    "pinned_pilot_model": {
+      "model": "openai-codex/gpt-5.6-sol",
+      "thinking": "high",
+      "approved_by_user": "2026-10-17"
+    },
+    "pilot_status": "not started; requires separate user go-ahead"
   },
   "next_actions": [
-    "Clone / checkout experiment/autonomy-lab locally and read autonomy_lab/SESSION_HANDOFF.md and autonomy_lab/AGENTS.md",
-    "Run local Python unit tests and offline mock trials",
-    "Verify installed Pi CLI/auth; choose and pin model if possible",
-    "Run one real local Pi trial: breadth=1, depth=deep, verification=rich, repeats=1, timeout=300",
-    "Inspect summary.json, trials.jsonl, Pi events, acceptance result",
-    "Then run repeated 2x2x2 pilot with same pinned model and repository version"
+    "Run the 2x2x2 pilot (24 trials) with --model openai-codex/gpt-5.6-sol --thinking high, after user go-ahead",
+    "Classify infrastructure failures (provider rejection before any tool call) separately from agent failures when summarizing",
+    "Expect a ceiling at breadth 1; plan harder or more numerous tasks before fitting any model",
+    "Address the shallow-brief confound: atomic-ledger held-out checks require behaviour the shallow brief does not state"
   ],
   "constraints": [
     "No main-branch modifications without explicit instruction",
@@ -71,9 +108,15 @@
     "Treat claims about deterministic reproducibility as approximations unless model/provider supports it"
   ],
   "unresolved": [
-    "Exact Pi CLI version, local host OS/runtime availability and model authentication not verified here",
-    "Which precise model is selected on user's machine",
+    "Whether provider-reported cost under ChatGPT OAuth reflects actual billing",
     "True sandboxing for Pi trials and cloud-paid runner not configured",
-    "Metric validity requires better tasks, independent plan scoring, randomization and repeated runs"
+    "Metric validity requires better tasks, independent plan scoring, randomization and repeated runs",
+    "Pi's configured default (claude-bridge) is extension-provided and cannot be benchmarked without loading that extension explicitly, which changes isolation"
+  ],
+  "runner_changes_after_first_trial": [
+    "--model (exact provider/id) and --thinking are required",
+    "Acceptance requires every assistant message to report the requested provider/model and thinking level, with no unparseable event lines",
+    "Pi event and stderr logs moved from the agent workspace to run-*/logs/<trial-id>/ (prevents accidental exposure, not deliberate access)",
+    "thinking_requested and observed thinking_levels recorded per trial"
   ]
 }
