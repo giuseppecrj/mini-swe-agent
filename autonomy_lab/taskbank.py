@@ -5,7 +5,9 @@ A task bank is a directory with one sub-directory per task:
     task.json        {"id", "module", "brief", "version", "author"}
     starter.py       weak starting implementation, copied into the workspace as <module>
     reference.py     a solution that satisfies every decision
-    mutants/<d>.py   the reference with only decision <d> violated
+    mutants/<d>.py   the reference with only decision <d> violated (required for every decision)
+    mutants/<d>--<alt>.py
+                     optional further alternatives; a binary arbitrary decision has only mutants/<d>.py
     decisions.json   [{"id", "label", "contract", "visible_check", "heldout_check"}]
     neutral.md       filler: one neutral sentence per line
 
@@ -53,7 +55,6 @@ MAX_MODULE_BYTES = 1 << 20
 MIN_DECISIONS = 4
 MAX_DECISIONS = 8
 MIN_ARBITRARY = 2
-MIN_ARBITRARY_MUTANTS = 2
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 # mutants/<decision-id>.py or mutants/<decision-id>--<alt>.py (LOOP_SPEC §4.1, alternative mutants)
 ALT_SEPARATOR = "--"
@@ -235,6 +236,8 @@ def load_task(task_dir):
     ids = []
     if isinstance(decisions, list):
         ids = [d.get("id") for d in decisions if isinstance(d, dict) and isinstance(d.get("id"), str)]
+        # One mutant per decision is enough, arbitrary ones included: a binary choice has a single natural
+        # alternative (LOOP_SPEC §4.1). Further --<alt> mutants are optional.
         for did in ids:
             text = _read_text(task_dir / "mutants" / f"{did}.py", f"mutants/{did}.py", errors)
             if text is not None:
@@ -251,16 +254,6 @@ def load_task(task_dir):
                 text = _read_text(path, f"mutants/{path.name}", errors)
                 if text is not None:
                     mutants[path.stem] = text
-    labels = (
-        {d.get("id"): d.get("label") for d in decisions if isinstance(d, dict)} if isinstance(decisions, list) else {}
-    )
-    for did in ids:
-        count = sum(1 for name in mutants if mutant_decision(name) == did)
-        if labels.get(did) == "arbitrary" and did in mutants and count < MIN_ARBITRARY_MUTANTS:
-            errors.append(
-                f"arbitrary decision {did!r} has {count} mutant; it needs at least {MIN_ARBITRARY_MUTANTS}"
-                f" (mutants/{did}.py and mutants/{did}{ALT_SEPARATOR}<alt>.py)"
-            )
     if errors or not isinstance(meta, dict) or not isinstance(decisions, list):
         return None, errors or ["task.json or decisions.json is unusable"]
     task = {

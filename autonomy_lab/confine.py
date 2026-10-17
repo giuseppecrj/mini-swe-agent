@@ -18,9 +18,12 @@ complete environment to start it with. Inside the profile:
 - PID, IPC, UTS, cgroup and user namespaces are new, nested user namespaces are disabled, ``/proc`` and ``/dev`` are
   fresh, the environment is cleared to a minimal allowlist, and the network is shared because the model provider needs
   it;
-- a classic-BPF seccomp filter (x86_64 only) returns ``EPERM`` for ``socket()`` with ``AF_UNIX`` and for the
-  ``io_uring`` syscalls: the shared network namespace would otherwise let the agent reach host *abstract* Unix
-  sockets (user daemons and agents), which no mount can hide. ``pipe``, ``socketpair`` and TCP keep working;
+- a classic-BPF seccomp filter (x86_64 only) returns ``EPERM`` for ``socket()`` with ``AF_UNIX``, for
+  ``socketpair()`` with ``AF_UNIX`` and any type but ``SOCK_STREAM``, and for the ``io_uring`` syscalls: the shared
+  network namespace would otherwise let the agent reach host *abstract* Unix sockets (user daemons and agents), which
+  no mount can hide. A datagram socketpair is not connected for good: ``connect()`` re-targets it at any abstract
+  name. A stream socketpair is (``connect()`` returns ``EISCONN``), so ``pipe``, stream ``socketpair`` and TCP keep
+  working;
 - the profile is launched through a short ``python3 -I -c`` exec shim that closes every inherited descriptor except
   stdin, stdout, stderr and the seccomp program, so a caller that leaks a descriptor to a hidden file (``pass_fds``,
   ``close_fds=False``, an inherited log file) cannot punch a hole through the mount profile.
@@ -51,6 +54,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 WORK_DIR = "/work"
@@ -95,6 +99,7 @@ class HostAuthError(RuntimeError):
 SECCOMP_DATA_NR = 0
 SECCOMP_DATA_ARCH = 4
 SECCOMP_DATA_ARG0 = 16  # low 32 bits of args[0] on a little-endian machine
+SECCOMP_DATA_ARG1 = 24  # low 32 bits of args[1]; the kernel reads both as int, so the high bits never matter
 AUDIT_ARCH_X86_64 = 0xC000003E
 X32_SYSCALL_BIT = 0x40000000
 SECCOMP_RET_KILL_PROCESS = 0x80000000
@@ -102,13 +107,18 @@ SECCOMP_RET_ERRNO = 0x00050000
 SECCOMP_RET_ALLOW = 0x7FFF0000
 EPERM = 1
 AF_UNIX = 1
+SOCK_STREAM = 1
+# The socket type without the SOCK_NONBLOCK and SOCK_CLOEXEC flags the type argument may carry.
+SOCK_TYPE_MASK = 0xF
 # x86_64 syscall numbers. io_uring can create and use sockets without ever calling socket().
 NR_SOCKET = 41
+NR_SOCKETPAIR = 53
 NR_IO_URING = (425, 426, 427)  # io_uring_setup, io_uring_enter, io_uring_register
 # Classic BPF: load a word at an absolute offset, compare, test bits, return an action.
 BPF_LD_W_ABS = 0x20
 BPF_JEQ_K = 0x15
 BPF_JSET_K = 0x45
+BPF_ALU_AND_K = 0x54
 BPF_RET_K = 0x06
 # The descriptor the exec shim hands to bwrap's --seccomp.
 SECCOMP_FD = 3
@@ -118,8 +128,9 @@ def seccomp_program():
     """Assemble the profile's classic-BPF seccomp program as a ``struct sock_filter`` array for ``--seccomp``.
 
     Kills anything that is not the x86_64 ABI (including x32, which renumbers syscalls), returns ``EPERM`` for
-    ``socket()`` with ``AF_UNIX`` and for the ``io_uring`` syscalls, and allows everything else. ``socketpair()`` and
-    ``pipe()`` are different syscalls and keep working.
+    ``socket()`` with ``AF_UNIX``, for ``socketpair()`` with ``AF_UNIX`` unless the type is ``SOCK_STREAM`` (flags
+    aside), and for the ``io_uring`` syscalls, and allows everything else. ``pipe()`` is a different syscall and keeps
+    working, as do the stream socketpairs that subprocess plumbing relies on.
     """
     machine = platform.machine()
     if machine != "x86_64":
@@ -135,12 +146,21 @@ def seccomp_program():
     emit(BPF_LD_W_ABS, SECCOMP_DATA_NR)
     emit(BPF_JSET_K, X32_SYSCALL_BIT, jt="kill")
     emit(BPF_JEQ_K, NR_SOCKET, jt="unix_domain")
+    emit(BPF_JEQ_K, NR_SOCKETPAIR, jt="unix_pair")
     for number in NR_IO_URING:
         emit(BPF_JEQ_K, number, jt="deny")
     emit(BPF_RET_K, SECCOMP_RET_ALLOW)
     labels["unix_domain"] = len(code)
     emit(BPF_LD_W_ABS, SECCOMP_DATA_ARG0)
     emit(BPF_JEQ_K, AF_UNIX, jt="deny", jf="allow")
+    labels["unix_pair"] = len(code)
+    emit(BPF_LD_W_ABS, SECCOMP_DATA_ARG0)
+    emit(BPF_JEQ_K, AF_UNIX, jf="allow")
+    # A datagram pair can connect() to a host abstract name; a stream pair is connected for good (EISCONN).
+    # SOCK_RAW counts as datagram for AF_UNIX, and SOCK_SEQPACKET has no use here, so only stream is allowed.
+    emit(BPF_LD_W_ABS, SECCOMP_DATA_ARG1)
+    emit(BPF_ALU_AND_K, SOCK_TYPE_MASK)
+    emit(BPF_JEQ_K, SOCK_STREAM, jt="allow", jf="deny")
     labels["deny"] = len(code)
     emit(BPF_RET_K, SECCOMP_RET_ERRNO | EPERM)
     labels["allow"] = len(code)
@@ -603,8 +623,9 @@ def prepare_host_auth(provider, model, min_expiry_seconds, pi_binary="pi"):
     ``auth.json`` is read-only inside the profile, so the confined Pi cannot refresh it. The runner calls this on the
     host, where a refresh is serialised by Pi's own lock, with a minimum validity that covers the whole trial.
 
-    The token itself is never captured: stdout goes to ``/dev/null``. Only stderr is read, for a short error message.
-    Raises :class:`HostAuthError` when the token cannot be prepared.
+    The token itself is never captured: stdout goes to ``/dev/null``. stderr is read only to pick a coarse failure
+    category from Pi's fixed messages; it is never copied into an exception or a log, since a failing credential
+    helper may print anything there. Raises :class:`HostAuthError` when the token cannot be prepared.
     """
     duration = _expiry_duration(min_expiry_seconds)
     command = [
@@ -626,13 +647,37 @@ def prepare_host_auth(provider, model, min_expiry_seconds, pi_binary="pi"):
             stderr=subprocess.PIPE,
             timeout=120,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise HostAuthError(f"cannot run '{pi_binary} auth print-bearer-token': {exc!r}") from exc
+    except OSError as exc:
+        reason = exc.strerror or type(exc).__name__
+        raise HostAuthError(f"cannot run '{pi_binary} auth print-bearer-token': {reason}") from None
+    except subprocess.SubprocessError as exc:
+        # from None: a TimeoutExpired carries the captured stderr, which must not reach a traceback either.
+        raise HostAuthError(f"cannot run '{pi_binary} auth print-bearer-token': {type(exc).__name__}") from None
     if done.returncode != 0:
-        detail = done.stderr.decode("utf-8", errors="replace").strip().splitlines()
-        reason = detail[-1][:200] if detail else f"exit {done.returncode}"
-        raise HostAuthError(f"cannot prepare the host token for {provider}/{model} ({duration}): {reason}")
+        category = _auth_failure_category(done.stderr)
+        raise HostAuthError(
+            f"cannot prepare the host token for {provider}/{model} ({duration}): "
+            f"pi exited with status {done.returncode} ({category})"
+        )
     return duration
+
+
+# Fixed phrases from Pi's auth command errors, mapped to a coarse category. Matching picks the category; the stderr
+# text itself is never reported.
+AUTH_FAILURE_CATEGORIES = (
+    ("credential unavailable", ("Failed to resolve credential",)),
+    ("unknown provider or model", ("Unknown provider", "Use --list-models", "Unable to resolve")),
+    ("usage error", ("Unknown option", "Unknown auth command", "--min-expiry must use", "only accept")),
+)
+
+
+def _auth_failure_category(stderr):
+    """Return a fixed category for a failed ``pi auth`` call, never any of its stderr text."""
+    text = (stderr or b"").decode("utf-8", errors="replace")
+    for category, phrases in AUTH_FAILURE_CATEGORIES:
+        if any(phrase in text for phrase in phrases):
+            return category
+    return "unrecognised failure"
 
 
 def _expiry_duration(min_expiry_seconds):
@@ -669,9 +714,10 @@ DENIED_REASONS = (
 )
 # A missing file is only a signal when the path it names is outside the workspace; inside, it is ordinary work.
 MISSING_FILE = re.compile(r"no such file or directory|not a directory|\bENOENT\b|\bENOTDIR\b", re.IGNORECASE)
-# A URL authority after the scheme is split off ("//example.com/a"), not an absolute path.
-HOST_LIKE = re.compile(r"^[\w-]+(\.[\w-]+)+(:\d+)?$")
 URL = re.compile(r"\b[a-z][a-z0-9+.\-]*://\S+", re.IGNORECASE)
+# A file URL names a local path (curl, browsers and urllib all open it), so it is classified, not dropped. It ends
+# where a shell word would, and never on the ":" or "." an error message puts after it.
+FILE_URL = re.compile(r"\bfile://(?:[^\s'\"`;|&<>()\[\],\\]*[^\s'\"`;|&<>()\[\],\\:.])?", re.IGNORECASE)
 # Errors raised by a malformed event rather than by a bug in the scanner.
 SCAN_ERRORS = (AttributeError, KeyError, TypeError, ValueError)
 
@@ -683,16 +729,35 @@ def normalise_path(word):
     return posixpath.normpath(re.sub(r"^/{2,}", "/", word))
 
 
+def file_url_path(url):
+    """Return the local path a ``file://`` URL names: ``file:///a`` and ``file://localhost/a`` are ``/a``.
+
+    Any other authority is kept as a leading ``//host`` path, which Linux resolves as ``/host``.
+    """
+    rest = url[len("file://") :]
+    try:
+        parts = urllib.parse.urlsplit("file://" + rest)
+        authority, path = parts.netloc, parts.path
+    except ValueError:  # an unbalanced IPv6 bracket in the authority
+        authority, _, path = rest.partition("/")
+        path = "/" + path
+    path = urllib.parse.unquote(path)
+    if authority.lower() in ("", "localhost"):
+        return path
+    return "//" + urllib.parse.unquote(authority) + path
+
+
 def classify_path(word, workspace=WORK_DIR):
     """Return the signal kind for one path-like word, or None when it stays in the workspace or the system."""
     if not word:
         return None
+    if word[:7].lower() == "file://":
+        word = file_url_path(word)
     if word.startswith(("~", "$HOME", "${HOME}")):
         return "home_path"
     parts = word.split("/")
     if word.startswith("/"):
-        if word.startswith("//") and HOST_LIKE.match(parts[2] if len(parts) > 2 else ""):
-            return None
+        # "//host.like/x" is an absolute path on Linux, not a URL authority: URLs are removed before splitting.
         normalised = normalise_path(word)
         if _is_within(normalised, workspace):
             return None
@@ -716,9 +781,10 @@ def _words(text):
 def _scan_text(text, workspace):
     # Keep a quoted "$HOME" attached to the path that follows it, as the shell does.
     text = QUOTED_HOME.sub(r"\1", text)
-    # URLs are not filesystem paths; drop them whole so "//example.com/a" is not read as an absolute path.
-    text = URL.sub(" ", text)
-    hits = [(kind, word) for word in _words(text) if (kind := classify_path(word, workspace))]
+    # File URLs are local paths; other URLs are not filesystem paths, so they are dropped whole.
+    hits = [(kind, url) for url in FILE_URL.findall(text) if (kind := classify_path(url, workspace))]
+    text = URL.sub(" ", FILE_URL.sub(" ", text))
+    hits += [(kind, word) for word in _words(text) if (kind := classify_path(word, workspace))]
     match = HOME_CALL.search(text)
     if match:
         hits.append(("home_path", match.group(0)))
@@ -837,7 +903,8 @@ def _scan_result(text, workspace, fallback):
 
 def _path_words(text):
     """Path-like words in an error message, so a denial on a system path still reports what was touched."""
-    return [word for word in _words(URL.sub(" ", text)) if "/" in word or word == ".."]
+    files = [file_url_path(url) for url in FILE_URL.findall(text)]
+    return files + [word for word in _words(URL.sub(" ", FILE_URL.sub(" ", text))) if "/" in word or word == ".."]
 
 
 # --- self-test -------------------------------------------------------------------------------------------------
@@ -889,6 +956,15 @@ def connect_abstract():
         handle.connect(b"\x00" + cfg["abstract_socket"].encode())
     finally:
         handle.close()
+# socket(AF_UNIX) is refused, but a datagram socketpair can still connect() to an abstract name and send to it.
+def socketpair_datagram_to_abstract():
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        left.connect(b"\x00" + cfg["abstract_datagram_socket"].encode())
+        left.send(b"probe")
+    finally:
+        left.close()
+        right.close()
 def io_uring_setup():
     libc = ctypes.CDLL(None, use_errno=True)
     libc.syscall.restype = ctypes.c_long
@@ -926,6 +1002,7 @@ def clean_fd_table():
         raise OSError("inherited descriptors: " + ", ".join(n + " -> " + targets[n] for n in extra))
 probe("create_unix_socket", unix_socket)
 probe("connect_host_abstract_socket", connect_abstract)
+probe("socketpair_datagram_to_host_abstract", socketpair_datagram_to_abstract)
 probe("io_uring_setup", io_uring_setup)
 probe("outbound_tcp", connect_tcp)
 probe("socketpair_works", socketpair_works)
@@ -974,6 +1051,7 @@ MUST_FAIL = (
     "create_root_entry",
     "create_unix_socket",
     "connect_host_abstract_socket",
+    "socketpair_datagram_to_host_abstract",
     "auth_refresh",
 )
 MUST_SUCCEED = (
@@ -994,8 +1072,9 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
     """Run the fake agent and return (ok, report). It uses a fake credentials file, never the real one.
 
     With ``confined`` (the acceptance test), ok means every escape probe failed, the workspace stayed usable, the
-    credentials stayed readable but unchanged, and pipes, socketpair and TCP still work. Without it (the control), ok
-    means the escape probes succeed on the bare host, which shows the probes are able to detect a missing profile.
+    credentials stayed readable but unchanged, and pipes, stream socketpairs and TCP still work. Without it (the
+    control), ok means the escape probes succeed on the bare host, which shows the probes are able to detect a missing
+    profile.
     """
     repo_lab = Path(__file__).resolve().parent
     if base is None:
@@ -1038,6 +1117,10 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
         abstract.bind(b"\x00" + abstract_name.encode())
         abstract.listen(2)
         listeners.append(abstract)
+        datagram = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        datagram.bind(b"\x00" + abstract_name.encode() + b"-dgram")
+        datagram.setblocking(False)
+        listeners.append(datagram)
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp.bind(("127.0.0.1", 0))
         tcp.listen(2)
@@ -1071,6 +1154,7 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
             },
             "sessions": str(sessions),
             "abstract_socket": abstract_name,
+            "abstract_datagram_socket": abstract_name + "-dgram",
             "tcp_port": tcp.getsockname()[1],
             "task_text": "task data",
             "agent_dir": AGENT_DIR if confined else str(fake_auth.parent),
@@ -1102,6 +1186,7 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
         checks["no_leaked_pi_env"] = results["leaked_env"] == []
         checks["workspace_write_visible_on_host"] = (workspace / "out.txt").is_file()
         checks["auth_unchanged_on_host"] = fake_auth.read_text(encoding="utf-8") == "{}"
+        checks["host_abstract_datagram_received_nothing"] = _received_nothing(datagram)
         report = {"checks": checks, "probes": {k: v for k, v in results.items() if isinstance(v, dict)}}
         return all(checks.values()), report
     finally:
@@ -1109,6 +1194,15 @@ def run_selftest(base=None, interpreter="/usr/bin/python3", confined=True):
             listener.close()
         for path in temporary:
             shutil.rmtree(path, ignore_errors=True)
+
+
+def _received_nothing(listener):
+    """True when a non-blocking host listener has no datagram waiting."""
+    try:
+        listener.recv(64)
+    except BlockingIOError:
+        return True
+    return False
 
 
 # Run as a grading check under the grading profile. Each probe reports whether it succeeded; nothing is printed

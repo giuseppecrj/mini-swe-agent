@@ -4,6 +4,7 @@ Tests that run bwrap skip when it is missing or cannot create unprivileged user 
 """
 
 import json
+import logging
 import os
 import shutil
 import signal
@@ -75,6 +76,33 @@ def pairs(command, flag):
     return [(command[i + 1], command[i + 2]) for i in range(1, end) if command[i] == flag]
 
 
+def run_seccomp(program, arch, nr, args=()):
+    """Interpret a classic-BPF seccomp program against one syscall and return its action.
+
+    Implements only the instructions the profile uses, so an unexpected opcode fails the test instead of being
+    guessed at. ``struct seccomp_data`` is laid out as on x86_64.
+    """
+    args = (*args, *(0,) * (6 - len(args)))
+    data = struct.pack("<iIQ6Q", nr if nr < 1 << 31 else nr - (1 << 32), arch, 0, *args)
+    code = [struct.unpack("=HBBI", program[i : i + 8]) for i in range(0, len(program), 8)]
+    accumulator, pc = 0, 0
+    while True:
+        op, jt, jf, k = code[pc]
+        if op == 0x20:  # BPF_LD | BPF_W | BPF_ABS
+            accumulator = struct.unpack_from("<I", data, k)[0]
+        elif op == 0x54:  # BPF_ALU | BPF_AND | BPF_K
+            accumulator &= k
+        elif op == 0x15:  # BPF_JMP | BPF_JEQ | BPF_K
+            pc += jt if accumulator == k else jf
+        elif op == 0x45:  # BPF_JMP | BPF_JSET | BPF_K
+            pc += jt if accumulator & k else jf
+        elif op == 0x06:  # BPF_RET | BPF_K
+            return k
+        else:
+            raise AssertionError(f"unexpected opcode {op:#x} at {pc}")
+        pc += 1
+
+
 class ProfileTests(unittest.TestCase):
     """The profile's command line, checked without running bwrap."""
 
@@ -118,17 +146,51 @@ class ProfileTests(unittest.TestCase):
         program = seccomp_program()
         self.assertEqual(len(program) % 8, 0)
         instructions = [struct.unpack("=HBBI", program[i : i + 8]) for i in range(0, len(program), 8)]
-        constants = [k for _, _, _, k in instructions]
-        self.assertIn(AUDIT_ARCH_X86_64, constants)  # the architecture is checked first
-        self.assertIn(0x40000000, constants)  # and the x32 ABI is rejected
-        for number in (41, 425, 426, 427):  # socket, io_uring_setup, io_uring_enter, io_uring_register
-            self.assertIn(number, constants)
-        actions = [k for code, _, _, k in instructions if code == 0x06]
-        self.assertIn(SECCOMP_RET_ERRNO | 1, actions)  # EPERM, not a kill, so the agent sees a normal error
-        self.assertIn(SECCOMP_RET_ALLOW, actions)
-        self.assertIn(SECCOMP_RET_KILL_PROCESS, actions)
-        # socket() is judged on its domain argument, read from args[0]; socketpair() is a different syscall.
-        self.assertEqual([k for code, _, _, k in instructions if code == 0x20], [4, 0, 16])
+        # The architecture is checked first, before any syscall number is read.
+        self.assertEqual(instructions[0], (0x20, 0, 0, 4))
+        self.assertEqual(instructions[1][0::3], (0x15, AUDIT_ARCH_X86_64))
+        eperm = SECCOMP_RET_ERRNO | 1  # EPERM, not a kill, so the agent sees a normal error
+        AF_UNIX, AF_INET, AF_INET6 = 1, 2, 10
+        STREAM, DGRAM, RAW, SEQPACKET = 1, 2, 3, 5
+        NONBLOCK, CLOEXEC = 0o4000, 0o2000000
+        cases = [
+            # Another architecture or the x32 ABI renumbers every syscall, so it is killed outright.
+            ("aarch64 socket", 0xC00000B7, 41, (AF_UNIX, STREAM), SECCOMP_RET_KILL_PROCESS),
+            ("x32 read", AUDIT_ARCH_X86_64, 0x40000000, (), SECCOMP_RET_KILL_PROCESS),
+            ("x32 socket", AUDIT_ARCH_X86_64, 0x40000000 | 41, (AF_UNIX, STREAM), SECCOMP_RET_KILL_PROCESS),
+            ("read", AUDIT_ARCH_X86_64, 0, (), SECCOMP_RET_ALLOW),
+            ("pipe2", AUDIT_ARCH_X86_64, 293, (), SECCOMP_RET_ALLOW),
+            # socket() is judged on its domain; the kernel reads it as an int, so high bits do not matter.
+            ("socket unix stream", AUDIT_ARCH_X86_64, 41, (AF_UNIX, STREAM), eperm),
+            ("socket unix dgram", AUDIT_ARCH_X86_64, 41, (AF_UNIX, DGRAM | CLOEXEC), eperm),
+            ("socket unix, high bits", AUDIT_ARCH_X86_64, 41, ((1 << 32) | AF_UNIX, STREAM), eperm),
+            ("socket inet", AUDIT_ARCH_X86_64, 41, (AF_INET, STREAM), SECCOMP_RET_ALLOW),
+            ("socket inet6 dgram", AUDIT_ARCH_X86_64, 41, (AF_INET6, DGRAM), SECCOMP_RET_ALLOW),
+            # socketpair(): a stream pair is connected for good; any other Unix pair can connect() elsewhere.
+            ("socketpair unix stream", AUDIT_ARCH_X86_64, 53, (AF_UNIX, STREAM), SECCOMP_RET_ALLOW),
+            (
+                "socketpair unix stream, flags",
+                AUDIT_ARCH_X86_64,
+                53,
+                (AF_UNIX, STREAM | NONBLOCK | CLOEXEC),
+                SECCOMP_RET_ALLOW,
+            ),
+            ("socketpair unix dgram", AUDIT_ARCH_X86_64, 53, (AF_UNIX, DGRAM), eperm),
+            ("socketpair unix dgram, cloexec", AUDIT_ARCH_X86_64, 53, (AF_UNIX, DGRAM | CLOEXEC), eperm),
+            ("socketpair unix dgram, flags", AUDIT_ARCH_X86_64, 53, (AF_UNIX, DGRAM | NONBLOCK | CLOEXEC), eperm),
+            ("socketpair unix raw", AUDIT_ARCH_X86_64, 53, (AF_UNIX, RAW), eperm),  # AF_UNIX turns RAW into DGRAM
+            ("socketpair unix seqpacket", AUDIT_ARCH_X86_64, 53, (AF_UNIX, SEQPACKET), eperm),
+            # The kernel reads the type as an int: a stream type in the high half does not make a dgram pair pass.
+            ("socketpair unix dgram, high bits", AUDIT_ARCH_X86_64, 53, (AF_UNIX, (STREAM << 32) | DGRAM), eperm),
+            ("socketpair unix, high domain bits", AUDIT_ARCH_X86_64, 53, ((1 << 32) | AF_UNIX, DGRAM), eperm),
+            ("socketpair inet dgram", AUDIT_ARCH_X86_64, 53, (AF_INET, DGRAM), SECCOMP_RET_ALLOW),
+            # io_uring can create and use sockets without socket().
+            ("io_uring_setup", AUDIT_ARCH_X86_64, 425, (), eperm),
+            ("io_uring_enter", AUDIT_ARCH_X86_64, 426, (), eperm),
+            ("io_uring_register", AUDIT_ARCH_X86_64, 427, (), eperm),
+        ]
+        for name, arch, nr, args, expected in cases:
+            self.assertEqual(run_seccomp(program, arch, nr, args), expected, name)
 
     def test_seccomp_filter_refuses_architectures_it_was_not_assembled_for(self):
         with mock.patch.object(confine_module.platform, "machine", return_value="aarch64"):
@@ -447,14 +509,38 @@ class HostAuthTests(unittest.TestCase):
             with self.assertRaises(HostAuthError, msg=bad):
                 prepare_host_auth("p", "m", bad, pi_binary=str(script))
 
-    def test_failure_raises_host_auth_error_with_a_short_non_secret_message(self):
-        script, _ = self.fake_pi(exit_code=1, stderr="warming up\nError: no OAuth credentials for openai-codex\n")
-        with self.assertRaises(HostAuthError) as caught:
-            prepare_host_auth("openai-codex", "gpt-5.6-sol", 900, pi_binary=str(script))
-        message = str(caught.exception)
-        self.assertIn("no OAuth credentials for openai-codex", message)
-        self.assertNotIn(self.TOKEN, message)
-        self.assertLess(len(message), 300)
+    def test_failure_reports_only_the_exit_status_never_stderr(self):
+        # A failing credential helper may print a token to stderr; none of that text may reach the exception.
+        leaked = "sk-FAKE-STDERR-TOKEN-0123456789"
+        for stderr, category in (
+            (f"Error: Failed to resolve credential: {leaked}\n", "credential unavailable"),
+            (f'\x1b[31mError: Unknown provider "{leaked}". Use --list-models\x1b[39m\n', "unknown provider or model"),
+            (f"{leaked}\n", "unrecognised failure"),
+        ):
+            script, _ = self.fake_pi(exit_code=1, stderr=stderr)
+            with self.assertLogs(level="DEBUG") as logs, self.assertRaises(HostAuthError) as caught:
+                logging.getLogger().debug("start")  # assertLogs needs one record; the call itself must log none
+                prepare_host_auth("openai-codex", "gpt-5.6-sol", 900, pi_binary=str(script))
+            message = str(caught.exception)
+            self.assertEqual(
+                message,
+                f"cannot prepare the host token for openai-codex/gpt-5.6-sol (15m): pi exited with status 1 ({category})",
+            )
+            self.assertIsNone(caught.exception.__cause__)
+            self.assertNotIn(leaked, "\n".join(logs.output))
+            self.assertNotIn("resolve credential", message)
+            self.assertNotIn(self.TOKEN, message)
+
+    def test_a_timeout_does_not_carry_stderr_into_the_exception(self):
+        script, _ = self.fake_pi()
+        timeout = subprocess.TimeoutExpired([str(script)], 120, output=None, stderr=b"sk-FAKE-STDERR-TOKEN")
+        with mock.patch.object(confine_module.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(HostAuthError) as caught:
+                prepare_host_auth("p", "m", 900, pi_binary=str(script))
+        self.assertIn("TimeoutExpired", str(caught.exception))
+        self.assertNotIn("sk-FAKE", str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertTrue(caught.exception.__suppress_context__)
 
     def test_a_missing_pi_binary_is_an_auth_failure_not_a_crash(self):
         with self.assertRaises(HostAuthError):
@@ -478,6 +564,8 @@ class BwrapTests(unittest.TestCase):
             "workspace_read_write",
             "create_unix_socket",
             "connect_host_abstract_socket",
+            "socketpair_datagram_to_host_abstract",
+            "host_abstract_datagram_received_nothing",
             "io_uring_setup",
             "auth_refresh",
             "clean_fd_table",
@@ -510,6 +598,7 @@ class BwrapTests(unittest.TestCase):
             "workspace_read_write",
             "create_unix_socket",
             "connect_host_abstract_socket",
+            "socketpair_datagram_to_host_abstract",
         ):
             self.assertTrue(report["checks"][name], name)
 
@@ -662,6 +751,99 @@ class BwrapTests(unittest.TestCase):
             self.assertIn("PermissionError", report[denied], f"{denied}: {report[denied]}")
         for allowed in ("socketpair", "pipe", "tcp", "bash", "python"):
             self.assertEqual(report[allowed], "ok", allowed)
+
+    def test_a_datagram_socketpair_cannot_reach_a_host_abstract_socket(self):
+        # The reviewer's bypass: socket(AF_UNIX) is refused, but socketpair(AF_UNIX, SOCK_DGRAM) was not, and a
+        # datagram pair can connect() to any abstract name in the shared network namespace and send to it.
+        root, workspace, auth = self.fixture()
+        name = "confine-test-dgram-" + uuid.uuid4().hex
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        listener.bind(b"\x00" + name.encode())
+        listener.setblocking(False)
+        self.addCleanup(listener.close)
+        stream_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stream_listener.bind(b"\x00" + name.encode() + b"-stream")
+        stream_listener.listen(2)
+        stream_listener.setblocking(False)
+        self.addCleanup(stream_listener.close)
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.bind(("127.0.0.1", 0))
+        tcp.listen(2)
+        self.addCleanup(tcp.close)
+        script = textwrap.dedent(f"""
+            import json, os, socket, subprocess
+            report = {{}}
+            def probe(name, call):
+                try:
+                    call()
+                    report[name] = "ok"
+                except Exception as exc:
+                    report[name] = type(exc).__name__ + ": " + str(exc)[:80]
+            def bypass(kind, target={name!r}):
+                def run():
+                    try:
+                        left, right = socket.socketpair(socket.AF_UNIX, kind)
+                    except OSError as exc:
+                        raise OSError(exc.errno, "at socketpair: " + exc.strerror) from None
+                    left.connect(b"\\x00" + target.encode())
+                    left.send(b"escaped")
+                return run
+            def stream_pair(kind):
+                def run():
+                    left, right = socket.socketpair(socket.AF_UNIX, kind)
+                    left.send(b"x")
+                    assert right.recv(1) == b"x"
+                return run
+            def pipe():
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"x")
+                assert os.read(read_fd, 1) == b"x"
+            def tcp_out():
+                with socket.create_connection(("127.0.0.1", {tcp.getsockname()[1]}), timeout=10) as handle:
+                    handle.send(b"ping")
+            def run_child(argv):
+                done = subprocess.run(argv, input="in", capture_output=True, text=True, check=True)
+                assert done.stdout.strip() == "in", done.stdout
+            probe("dgram", bypass(socket.SOCK_DGRAM))
+            probe("dgram_nonblock_cloexec", bypass(socket.SOCK_DGRAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC))
+            probe("raw", bypass(socket.SOCK_RAW))
+            probe("seqpacket", bypass(socket.SOCK_SEQPACKET))
+            probe("default_socketpair", stream_pair(socket.SOCK_STREAM))
+            probe("stream_nonblock_cloexec", stream_pair(socket.SOCK_STREAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC))
+            probe("stream_pair_connect", bypass(socket.SOCK_STREAM, {name + "-stream"!r}))
+            probe("pipe", pipe)
+            probe("tcp", tcp_out)
+            probe("bash", lambda: run_child(["bash", "-c", "cat"]))
+            probe("python", lambda: run_child(["python3", "-I", "-c", "import sys; print(sys.stdin.read())"]))
+            print(json.dumps(report))
+            """)
+        report, _ = self.probe(script, workspace, auth, results_dirs=[str(root)])
+        for denied in ("dgram", "dgram_nonblock_cloexec", "raw", "seqpacket"):
+            self.assertTrue(
+                report[denied].startswith("PermissionError: [Errno 1] at socketpair"), f"{denied}: {report}"
+            )
+        for allowed in ("default_socketpair", "stream_nonblock_cloexec", "pipe", "tcp", "bash", "python"):
+            self.assertEqual(report[allowed], "ok", f"{allowed}: {report}")
+        # A stream pair is allowed because it is already connected for good, even to a host stream listener.
+        self.assertIn("[Errno 106]", report["stream_pair_connect"])  # EISCONN
+        with self.assertRaises(BlockingIOError):
+            listener.recv(64)
+        with self.assertRaises(BlockingIOError):
+            stream_listener.accept()
+
+    def test_the_datagram_probe_reaches_the_host_without_the_profile(self):
+        # Control for the test above: unconfined, the same bypass delivers its datagram.
+        name = "confine-test-dgram-" + uuid.uuid4().hex
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        listener.bind(b"\x00" + name.encode())
+        listener.settimeout(10)
+        self.addCleanup(listener.close)
+        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(left.close)
+        self.addCleanup(right.close)
+        left.connect(b"\x00" + name.encode())
+        left.send(b"escaped")
+        self.assertEqual(listener.recv(64), b"escaped")
 
     def test_a_refresh_inside_the_sandbox_fails_and_never_touches_the_host_file(self):
         original = '{"host": "original"}'
@@ -851,6 +1033,30 @@ class SignalScanTests(unittest.TestCase):
         self.assertIn("read: /home/./g/notes.txt", details)
         self.assertEqual(len(signals), 3)
 
+    def test_host_like_double_slash_paths_and_file_urls_are_recognised(self):
+        # The reviewer's cases: `//host.like/...` was taken for a URL authority, and file:// URLs were dropped whole.
+        events = [
+            start("1", "bash", command="cat //home.dir/g/notes.txt"),
+            start("2", "bash", command="curl 'file:///home/g/.pi/agent/auth.json'; curl https://example.com/a/b"),
+            start("3", "bash", command="python3 -c \"urlopen('file://localhost/srv/repo/runner.py')\""),
+            start("4", "read", path="file:///home/g/x.jsonl"),
+            start("5", "bash", command="curl file:///work/ledger.py file:///usr/share/x"),
+            start("6", "bash", command="curl file:///home/g/missing"),
+            end("6", "bash", "curl: (37) Couldn't open file file:///home/g/missing: No such file or directory", True),
+        ]
+        signals = scan_confinement_signals(events)
+        self.assertEqual(
+            signals,
+            [
+                {"kind": "absolute_path", "detail": "bash: //home.dir/g/notes.txt"},
+                {"kind": "absolute_path", "detail": "bash: file:///home/g/.pi/agent/auth.json"},
+                {"kind": "absolute_path", "detail": "bash: file://localhost/srv/repo/runner.py"},
+                {"kind": "absolute_path", "detail": "read: file:///home/g/x.jsonl"},
+                {"kind": "absolute_path", "detail": "bash: file:///home/g/missing"},
+                {"kind": "denied_path", "detail": "bash: file:///home/g/missing"},
+            ],
+        )
+
     def test_normalise_path(self):
         cases = {
             "//home/g": "/home/g",
@@ -925,9 +1131,19 @@ class SignalScanTests(unittest.TestCase):
             "/home/./g": "absolute_path",
             "//work/x": None,
             "//usr/bin/python3": None,
-            # A URL authority, left behind when the scheme is split off at the colon.
-            "//example.com/a/b": None,
-            "//registry.npmjs.org:443/x": None,
+            # Linux resolves a doubled leading slash as an absolute path, whatever follows it.
+            "//example.com/a/b": "absolute_path",
+            "//registry.npmjs.org:443/x": "absolute_path",
+            "//host.like/etc": "absolute_path",
+            # File URLs name local paths.
+            "file:///home/g/.pi/agent/auth.json": "absolute_path",
+            "file://localhost/home/g": "absolute_path",
+            "FILE:///srv/repo": "absolute_path",
+            "file://host.like/x": "absolute_path",
+            "file:///work/%2e%2e/home": "parent_relative_path",
+            "file:///work/ledger.py": None,
+            "file:///usr/lib/x": None,
+            "file://": None,
         }
         for word, kind in cases.items():
             self.assertEqual(classify_path(word), kind, word)
