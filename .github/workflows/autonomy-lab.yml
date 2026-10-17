@@ -1,0 +1,53 @@
+name: Autonomy Lab cloud smoke
+
+on:
+  push:
+    branches:
+      - experiment/autonomy-lab
+    paths:
+      - "autonomy_lab/**"
+      - ".github/workflows/autonomy-lab.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Verify cloud testbed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out experiment branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run unit tests
+        run: python -m unittest discover -s autonomy_lab/tests -v
+      - name: Exercise full trial and reporting pipeline without an LLM
+        run: python -m autonomy_lab.runner --backend mock --breadths 1,2 --repetitions 1 --out autonomy_lab_results
+      - name: Verify trial report structure
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("autonomy_lab_results")
+          meta = json.loads((root / "summary.json").read_text())
+          assert meta["backend"] == "mock"
+          assert meta["is_real_agent_evidence"] is False
+          assert len(meta["summary"]) == 8
+          assert len((root / "trials.jsonl").read_text().splitlines()) == 8
+          print("Cloud smoke report validated: 8 trial configurations")
+          PY
+      - name: Upload experiment output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autonomy-lab-smoke
+          path: autonomy_lab_results/
+          if-no-files-found: warn
+          retention-days: 14
