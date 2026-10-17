@@ -1,0 +1,79 @@
+{
+  "schema_version": "0.2.0",
+  "handoff_date_utc": "2026-10-17",
+  "origin": "ChatGPT conversation about agentic engineering autonomy; curated handoff, not full raw transcript",
+  "destination": {
+    "coordinator": "Pi CLI interactive, preferably in Herdr",
+    "benchmark_agent": "Pi CLI, headless JSON event mode",
+    "optional_comparison_agent": "mini-SWE-agent in Docker",
+    "optional_future_orchestrator": "maestro; do not add during initial controlled runs"
+  },
+  "repository": {
+    "full_name": "giuseppecrj/mini-swe-agent",
+    "branch": "experiment/autonomy-lab",
+    "default_branch_unchanged": true,
+    "local_remote": "https://github.com/giuseppecrj/mini-swe-agent.git",
+    "source_of_truth": "autonomy_lab/SESSION_HANDOFF.md"
+  },
+  "theory": {
+    "claim": "Autonomous capacity depends on resolved uncertainty, self-verification, task breadth and coupling",
+    "success_model": "P(success) ~ (1-q)^B where B is number of consequential decisions; q depends on depth, verification, model/harness capability and coupling",
+    "leverage_metric": "accepted independent engineering work / (human planning + interventions + final review time)",
+    "status": "proposed, uncalibrated and not empirically validated",
+    "research_questions": [
+      "Does depth independently improve reliable autonomous completion?",
+      "Does verification matter more than depth?",
+      "Is there an interaction between depth and verification?",
+      "How does breadth reduce the probability of no-intervention success?"
+    ]
+  },
+  "current_experiment": {
+    "design": "2 x 2 x 2 factorial: breadth (1|2), depth (shallow|deep), visible verification (basic|rich)",
+    "task_ids": [
+      "ordered-merge",
+      "atomic-ledger"
+    ],
+    "held_out_acceptance": true,
+    "smoke_backend": "mock (no LLM)",
+    "local_real_backend": "pi-local (implemented but NOT yet exercised on user's machine)",
+    "docker_backend": "docker-mini (container built and CLI startup checked in cloud, but real model calls not executed)",
+    "cloud_validation": {
+      "provider": "GitHub Actions",
+      "latest_verified_run_id": 39026174523,
+      "url": "https://github.com/giuseppecrj/mini-swe-agent/actions/runs/39026174523",
+      "conclusion": "success",
+      "checks": [
+        "unit tests",
+        "8 mock trial report outputs",
+        "Docker build",
+        "container CLI startup",
+        "artifact upload"
+      ]
+    },
+    "real_pi_trials_completed": 0,
+    "published_performance_claims": false
+  },
+  "next_actions": [
+    "Clone / checkout experiment/autonomy-lab locally and read autonomy_lab/SESSION_HANDOFF.md and autonomy_lab/AGENTS.md",
+    "Run local Python unit tests and offline mock trials",
+    "Verify installed Pi CLI/auth; choose and pin model if possible",
+    "Run one real local Pi trial: breadth=1, depth=deep, verification=rich, repeats=1, timeout=300",
+    "Inspect summary.json, trials.jsonl, Pi events, acceptance result",
+    "Then run repeated 2x2x2 pilot with same pinned model and repository version"
+  ],
+  "constraints": [
+    "No main-branch modifications without explicit instruction",
+    "No credentials or personal local machine paths in Git",
+    "No claiming mock smoke results are agent evidence",
+    "Do not alter held-out graders or visible test specifications to obtain passing results",
+    "Full-access local Pi process is not a security isolation boundary; only trusted fixtures in first local test",
+    "Use fresh trial workspaces, stable harness/model, track exact parameters and human interventions",
+    "Treat claims about deterministic reproducibility as approximations unless model/provider supports it"
+  ],
+  "unresolved": [
+    "Exact Pi CLI version, local host OS/runtime availability and model authentication not verified here",
+    "Which precise model is selected on user's machine",
+    "True sandboxing for Pi trials and cloud-paid runner not configured",
+    "Metric validity requires better tasks, independent plan scoring, randomization and repeated runs"
+  ]
+}
