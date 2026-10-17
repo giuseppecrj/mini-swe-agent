@@ -263,13 +263,43 @@ def e2_trials(tasks, trials_per_task, master_seed):
     return trials, {}
 
 
+def balanced_groups(task_ids, breadth, count, rng):
+    """Constructively build ``count`` groups of ``breadth`` distinct tasks, each task used equally often.
+
+    Each task is used ``count * breadth / len(task_ids)`` times. Groups are built one at a time: a task that must
+    appear in every remaining group is forced in, and the rest of the group is drawn from tasks with uses left,
+    weighted by uses left, without replacement. With g groups left, every task has at most g uses left and the uses
+    left sum to g * breadth, so at most ``breadth`` tasks are forced and at least ``breadth`` tasks remain
+    available: the construction never fails and needs no rejection. Each group is then shuffled into prompt order.
+    """
+    remaining = {task_id: count * breadth // len(task_ids) for task_id in task_ids}
+    groups = []
+    for left in range(count, 0, -1):
+        forced = [t for t in task_ids if remaining[t] == left]
+        pool = [t for t in task_ids if 0 < remaining[t] < left]
+        group = list(forced)
+        while len(group) < breadth:
+            total = sum(remaining[t] for t in pool)
+            pick = rng.below(total)
+            for index, task_id in enumerate(pool):
+                pick -= remaining[task_id]
+                if pick < 0:
+                    group.append(pool.pop(index))
+                    break
+        for task_id in group:
+            remaining[task_id] -= 1
+        rng.shuffle(group)
+        groups.append(group)
+    return groups
+
+
 def e3_trials(tasks, unsettled, breadth_trials, master_seed):
     """E3: one unsettled decision per task, every other decision `contract`, no filler.
 
     `unsettled` is {task_id: decision_id}; `breadth_trials` is {breadth: trials}.
-    Task subsets and their order come from concatenated seeded permutations of
-    the E3 tasks, cut into groups of B and redrawn until no group repeats a
-    task, so every task appears equally often at each breadth.
+    Task subsets and their order are built constructively from a seeded stream
+    (balanced_groups), so every task appears equally often at each breadth
+    and no group repeats a task.
     """
     by_id = {task["id"]: task for task in tasks}
     if not unsettled:
@@ -300,23 +330,9 @@ def e3_trials(tasks, unsettled, breadth_trials, master_seed):
             raise DesignError(
                 f"E3 breadth {breadth}: {count} trials cannot use each of {len(task_ids)} tasks equally often"
             )
-        rounds = count * breadth // len(task_ids)
         seed = derive_seed("E3", master_seed, "e3-breadth", breadth)
-        rng = _Rng(seed)
-        draws = 0
-        while True:
-            draws += 1
-            if draws > MAX_DRAWS:
-                raise DesignError(f"E3 breadth {breadth}: no repeat-free grouping in {MAX_DRAWS} draws")
-            sequence = []
-            for _ in range(rounds):
-                permutation = list(task_ids)
-                rng.shuffle(permutation)
-                sequence.extend(permutation)
-            groups = [sequence[i : i + breadth] for i in range(0, len(sequence), breadth)]
-            if all(len(set(group)) == breadth for group in groups):
-                break
-        generation[f"b{breadth}"] = {"seed": seed, "draws": draws}
+        groups = balanced_groups(task_ids, breadth, count, _Rng(seed))
+        generation[f"b{breadth}"] = {"seed": seed, "method": "constructive"}
         for index, group in enumerate(groups):
             trial_id = f"E3-b{breadth}-{index + 1:03d}"
             trials.append(_trial("E3", master_seed, trial_id, group, {t: channels[t] for t in group}))

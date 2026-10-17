@@ -1,5 +1,6 @@
 """Offline tests for the seeded design generators, prompts and visible checks (T2)."""
 
+import time
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -9,7 +10,9 @@ from autonomy_lab.design import (
     CHANNELS,
     PREAMBLE,
     DesignError,
+    _Rng,
     all_contract_length,
+    balanced_groups,
     build_prompt,
     build_visible_checks,
     canonical_json,
@@ -273,6 +276,42 @@ class OtherDesignTests(unittest.TestCase):
                 self.assertNotIn("VISIBLE-", checks)
         orders = {tuple(t["task_ids"]) for t in design["trials"] if t["breadth"] == 2}
         self.assertGreater(len(orders), 1)
+
+    def test_e3_construction_is_balanced_fast_and_deterministic_where_rejection_sampling_failed(self):
+        # Review finding 9: six tasks, seed 1 and breadth counts {1: 12, 2: 12, 4: 60} exhausted 100,000 draws.
+        tasks = [synthetic_task(f"t{i}") for i in range(6)]
+        unsettled = {task["id"]: "d0" for task in tasks}
+        counts = {1: 12, 2: 12, 4: 60}
+        started = time.monotonic()
+        design = generate_design(tasks, "E3", 1, FAKE_HASH, e3_unsettled=unsettled, e3_breadth_trials=counts)
+        self.assertLess(time.monotonic() - started, 5)
+        for breadth, trials in counts.items():
+            rows = [t["task_ids"] for t in design["trials"] if t["breadth"] == breadth]
+            self.assertEqual(len(rows), trials)
+            self.assertTrue(all(len(set(row)) == breadth for row in rows))
+            self.assertEqual(
+                Counter(t for row in rows for t in row), Counter({t: trials * breadth // 6 for t in unsettled})
+            )
+            self.assertEqual(design["generation"][f"b{breadth}"]["method"], "constructive")
+        again = generate_design(tasks, "E3", 1, FAKE_HASH, e3_unsettled=unsettled, e3_breadth_trials=counts)
+        self.assertEqual(canonical_json(design), canonical_json(again))
+        other = generate_design(tasks, "E3", 2, FAKE_HASH, e3_unsettled=unsettled, e3_breadth_trials=counts)
+        self.assertNotEqual([t["task_ids"] for t in design["trials"]], [t["task_ids"] for t in other["trials"]])
+
+    def test_balanced_groups_never_fail_on_feasible_parameters(self):
+        for n in range(1, 9):
+            ids = [f"t{i}" for i in range(n)]
+            for breadth in range(1, n + 1):
+                for count in range(1, 25):
+                    if (count * breadth) % n:
+                        continue
+                    for seed in range(3):
+                        with self.subTest(n=n, breadth=breadth, count=count, seed=seed):
+                            groups = balanced_groups(ids, breadth, count, _Rng(seed))
+                            self.assertEqual(len(groups), count)
+                            self.assertTrue(all(len(set(g)) == breadth for g in groups))
+                            uses = Counter(t for g in groups for t in g)
+                            self.assertEqual(set(uses.values()), {count * breadth // n})
 
     def test_e3_rejects_bad_parameters(self):
         good = {"alpha": "d0", "beta": "d0"}
