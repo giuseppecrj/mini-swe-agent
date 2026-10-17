@@ -144,6 +144,9 @@ class TaskBankValidationTests(unittest.TestCase):
             slug_matrix["mutant:empty--default"]["heldout"],
             {"lowercase": True, "separator": True, "empty": False, "strip": True},
         )
+        # A binary arbitrary decision (graded behaviour plus one alternative) has a single mutant and is valid.
+        clamp_matrix = next(t["matrix"] for t in report["tasks"] if t["id"] == "clamp-range")
+        self.assertEqual([name for name in clamp_matrix if name.startswith("mutant:bool")], ["mutant:bool"])
         self.assertEqual([t["id"] for t in report["tasks"]], ["clamp-range", "slugify"])
         self.assertEqual(report["task_bank_sha256"], task_bank_sha256(VALID_BANK))
         tasks = load_bank(VALID_BANK)
@@ -260,15 +263,7 @@ class TaskBankValidationTests(unittest.TestCase):
             decisions[1]["label"] = "inferable"  # separator
             decisions[3]["label"] = "arbitrary"  # strip, which the starter passes
 
-        def edit(task):
-            self.edit_decisions(change)(task)
-            # An arbitrary decision needs an alternative mutant too: strip only leading spaces.
-            (task / "mutants" / "strip--leading.py").write_text(
-                'def slug(text):\n    if text == "":\n        raise ValueError("empty")\n'
-                '    return text.lstrip().lower().replace(" ", "-")\n'
-            )
-
-        self.defect(edit, "starter fails 1 arbitrary held-out checks; it must fail at least 2")
+        self.defect(self.edit_decisions(change), "starter fails 1 arbitrary held-out checks; it must fail at least 2")
 
     def test_starter_breaking_a_preserve_decision(self):
         def edit(task):
@@ -322,11 +317,20 @@ class TaskBankValidationTests(unittest.TestCase):
             "alternative name 'Bad'",
         )
 
-    def test_every_arbitrary_decision_needs_two_mutants(self):
-        self.defect(
-            lambda task: (task / "mutants" / "empty--default.py").unlink(),
-            "arbitrary decision 'empty' has 1 mutant; it needs at least 2",
-        )
+    def test_a_binary_arbitrary_decision_needs_only_its_main_mutant(self):
+        # LOOP_SPEC §4.1: a binary choice has one natural alternative, so mutants/<id>.py alone is valid.
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = Path(tmp) / "bank"
+            shutil.copytree(VALID_BANK, bank)
+            (bank / "slugify" / "mutants" / "empty--default.py").unlink()
+            (bank / "slugify" / "mutants" / "separator--none.py").unlink()
+            report = validate_bank(bank, sandbox=SANDBOX)
+        self.assertTrue(report["valid"], json.dumps(report, indent=2))
+        self.assertEqual(task_errors(report, "slugify"), [])
+
+    def test_an_arbitrary_decision_still_needs_its_main_mutant(self):
+        # An --<alt> variant does not stand in for mutants/<id>.py.
+        self.defect(lambda task: (task / "mutants" / "empty.py").unlink(), "missing mutants/empty.py")
 
     def test_alternative_mutants_must_isolate_their_decision(self):
         def copy_reference(task):
