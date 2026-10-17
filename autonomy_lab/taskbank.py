@@ -20,7 +20,10 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,6 +31,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from autonomy_lab.confine import (
+    SYSTEM_PATH,
+    WORK_DIR,
+    ConfinementError,
+    GradingSandbox,
+    bwrap_unavailable_reason,
+    sandbox_setup_failed,
+)
 from autonomy_lab.design import build_visible_checks, filler_feasibility_errors
 
 LABELS = ("inferable", "arbitrary", "preserve")
@@ -35,21 +46,41 @@ AUTHORS = ("coordinator", "user")
 TASK_FIELDS = ("id", "module", "brief", "version", "author")
 DECISION_FIELDS = ("id", "label", "contract", "visible_check", "heldout_check")
 CHECK_TIMEOUT = 10
+# Of each check's timeout, the share kept back for killing the process group and draining its pipes, so the whole
+# check, cleanup included, ends within the timeout (LOOP_SPEC §4.2a).
+KILL_GRACE = 0.5
+MAX_MODULE_BYTES = 1 << 20
 MIN_DECISIONS = 4
 MAX_DECISIONS = 8
 MIN_ARBITRARY = 2
+MIN_ARBITRARY_MUTANTS = 2
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# mutants/<decision-id>.py or mutants/<decision-id>--<alt>.py (LOOP_SPEC §4.1, alternative mutants)
+ALT_SEPARATOR = "--"
+# Files the harness writes into a trial workspace, by import name: a task module may not collide with them.
+RESERVED_MODULES = frozenset({"visible_checks", "prompt", "sitecustomize", "usercustomize", "__main__"})
 
-# Runs one check in a fresh interpreter. The workspace is appended (not
-# prepended) to sys.path so that workspace files cannot shadow the standard
-# library; validation rejects module names that the clean interpreter can
-# already import, so the task module always resolves to the workspace copy.
+# Runs one check in a fresh interpreter whose working directory holds nothing but a copy of the task module.
+# stdin carries three lines: a ready marker, the completion token, then the check source. The ready marker is
+# printed before any check or candidate code runs, so its absence means the sandbox itself failed to start. The
+# token is printed only after the check's last statement, so a candidate that ends the process early (sys.exit or
+# os._exit at import) cannot pass. The check directory is appended (not prepended) to sys.path so that the module
+# cannot shadow the standard library; validation rejects module names the clean interpreter can already import.
+# The token lives in a function local, not in __main__, so it is not trivially visible to the check's code. This
+# defeats accidental early exits only; it is not proof against code that inspects the interpreter's frames.
 _CHECK_BOOTSTRAP = (
     "import sys\n"
-    "sys.path.append(sys.argv[1])\n"
-    "del sys.argv[1:]\n"
-    "_source = sys.stdin.read()\n"
-    "exec(compile(_source, '<check>', 'exec'), {'__name__': '__main__'})\n"
+    "def _lab_check():\n"
+    "    ready, token, source = sys.stdin.buffer.read().split(b'\\n', 2)\n"
+    "    sys.stdout.write(ready.decode('ascii') + '\\n')\n"
+    "    sys.stdout.flush()\n"
+    "    sys.path.append(sys.argv[1])\n"
+    "    del sys.argv[1:]\n"
+    "    exec(compile(source.decode('utf-8'), '<check>', 'exec'), {'__name__': '__main__'})\n"
+    "    sys.stdout.flush()\n"
+    "    sys.stdout.write('\\n' + token.decode('ascii') + '\\n')\n"
+    "    sys.stdout.flush()\n"
+    "_lab_check()\n"
 )
 
 
@@ -63,14 +94,24 @@ def task_bank_sha256(bank_dir):
     The digest is taken over a manifest with one line per file,
     ``<relative posix path>\\0<sha256 of content>\\n``, in byte order of the
     UTF-8 encoded paths, so every path and every content byte is covered and
-    no file boundary is ambiguous.
+    no file boundary is ambiguous. A symlink anywhere below the bank root, to a
+    file or a directory, is an error: os.walk does not descend into directory
+    symlinks while loading follows them, so the hash would not cover what is
+    loaded (LOOP_SPEC §4.2a, bank integrity).
     """
     root = Path(bank_dir)
     if not root.is_dir():
         raise TaskBankError(f"task bank {root} is not a directory")
     entries = []
-    for dirpath, dirnames, filenames in os.walk(root):
+
+    def walk_error(exc):
+        raise TaskBankError(f"cannot read the task bank: {exc}")
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=walk_error):
         dirnames.sort()
+        for name in dirnames:
+            if (Path(dirpath) / name).is_symlink():
+                raise TaskBankError(f"task bank entry {Path(dirpath) / name} is a symlink")
         for name in filenames:
             path = Path(dirpath) / name
             if path.is_symlink() or not path.is_file():
@@ -122,11 +163,13 @@ def _schema_errors(task_dir, meta, decisions):
         if "id" in meta and meta["id"] != task_dir.name:
             errors.append(f"task.json id {meta['id']!r} does not match directory name {task_dir.name!r}")
         module = meta.get("module")
-        if "module" in meta and not (
-            isinstance(module, str) and module.endswith(".py") and module[:-3].isidentifier()
-        ):
+        if "module" in meta and not (isinstance(module, str) and module.endswith(".py") and module[:-3].isidentifier()):
             errors.append(f"task.json module {module!r} must be '<identifier>.py'")
-        elif isinstance(module, str) and module[:-3] in sys.stdlib_module_names:
+        elif isinstance(module, str) and module[:-3] in RESERVED_MODULES:
+            errors.append(f"task.json module {module!r} collides with a harness file")
+        elif isinstance(module, str) and (
+            module[:-3] in sys.stdlib_module_names or module[:-3] in sys.builtin_module_names
+        ):
             errors.append(f"task.json module {module!r} shadows a standard-library module")
         if "brief" in meta and not (isinstance(meta["brief"], str) and meta["brief"].strip()):
             errors.append("task.json brief must be a non-empty string")
@@ -199,8 +242,25 @@ def load_task(task_dir):
     mutant_dir = task_dir / "mutants"
     if mutant_dir.is_dir():
         for path in sorted(mutant_dir.iterdir()):
-            if path.suffix != ".py" or path.stem not in ids:
+            decision, alt = mutant_decision(path.stem), path.stem.partition(ALT_SEPARATOR)[2]
+            if path.suffix != ".py" or decision not in ids:
                 errors.append(f"mutants/{path.name} does not correspond to a decision")
+            elif path.stem != decision and not (_ID_PATTERN.match(alt) and ALT_SEPARATOR not in alt):
+                errors.append(f"mutants/{path.name}: alternative name {alt!r} must match {_ID_PATTERN.pattern}")
+            elif path.stem != decision:
+                text = _read_text(path, f"mutants/{path.name}", errors)
+                if text is not None:
+                    mutants[path.stem] = text
+    labels = (
+        {d.get("id"): d.get("label") for d in decisions if isinstance(d, dict)} if isinstance(decisions, list) else {}
+    )
+    for did in ids:
+        count = sum(1 for name in mutants if mutant_decision(name) == did)
+        if labels.get(did) == "arbitrary" and did in mutants and count < MIN_ARBITRARY_MUTANTS:
+            errors.append(
+                f"arbitrary decision {did!r} has {count} mutant; it needs at least {MIN_ARBITRARY_MUTANTS}"
+                f" (mutants/{did}.py and mutants/{did}{ALT_SEPARATOR}<alt>.py)"
+            )
     if errors or not isinstance(meta, dict) or not isinstance(decisions, list):
         return None, errors or ["task.json or decisions.json is unusable"]
     task = {
@@ -228,15 +288,38 @@ def load_task(task_dir):
     return task, []
 
 
+def mutant_decision(name):
+    """The decision a mutant (file stem ``<decision-id>`` or ``<decision-id>--<alt>``) violates."""
+    return name.partition(ALT_SEPARATOR)[0]
+
+
 def task_dirs(bank_dir):
     root = Path(bank_dir)
     if not root.is_dir():
         raise TaskBankError(f"task bank {root} is not a directory")
-    return sorted(p for p in root.iterdir() if p.is_dir())
+    entries = sorted(root.iterdir())
+    links = [p.name for p in entries if p.is_symlink()]
+    if links:
+        raise TaskBankError(f"task bank {root} contains symlinks: {', '.join(links)}")
+    return [p for p in entries if p.is_dir()]
+
+
+def load_bank_with_hash(bank_dir):
+    """Load every task and return (tasks, task_bank_sha256), checking the bank did not change while loading.
+
+    The hash is taken before and after loading; a difference raises TaskBankError, so the returned hash covers
+    exactly the bytes that were loaded.
+    """
+    before = task_bank_sha256(bank_dir)
+    tasks = load_bank(bank_dir)
+    if task_bank_sha256(bank_dir) != before:
+        raise TaskBankError(f"task bank {bank_dir} changed while it was being loaded")
+    return tasks, before
 
 
 def load_bank(bank_dir):
     """Load every task, sorted by id. Raises TaskBankError if any task cannot be loaded."""
+    task_bank_sha256(bank_dir)  # rejects symlinks and special files before anything is read
     tasks = []
     problems = []
     for task_dir in task_dirs(bank_dir):
@@ -269,131 +352,280 @@ def _bank_level_errors(tasks):
     return errors
 
 
+class GradingError(RuntimeError):
+    """A check could not be run at all (for example, the grading sandbox failed to start): not a candidate failure."""
+
+
 def _kill(process):
     if os.name == "posix":
         # The group may already be gone; that is the desired end state.
-        with contextlib.suppress(ProcessLookupError):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGKILL)
-    else:
+    with contextlib.suppress(OSError):
         process.kill()
 
 
-def run_check(workspace, source, timeout=CHECK_TIMEOUT, pycache_dir=None):
-    """Run one check snippet in its own `python -I` process with cwd=workspace.
+def _communicate(process, data, deadline):
+    """communicate() bounded by ``deadline``, then by KILL_GRACE for killing the group and draining the pipes.
 
-    Passes exactly when the process exits 0 within the timeout. Bytecode is
-    redirected to pycache_dir so a stale or planted __pycache__ in the
-    workspace is never read.
+    Returns (stdout, stderr, timed_out). A descendant that left the process group can keep a pipe open forever;
+    after the grace period its pipes are closed and abandoned, so cleanup never extends the check without bound.
+    Under the grading sandbox no descendant can outlive the check: its PID namespace dies with it.
     """
-    workspace = Path(workspace).resolve()
-    command = [sys.executable, "-I"]
-    if pycache_dir is not None:
-        command += ["-X", "pycache_prefix=" + str(pycache_dir)]
-    command += ["-c", _CHECK_BOOTSTRAP, str(workspace)]
-    started = time.monotonic()
-    process = subprocess.Popen(
-        command,
-        cwd=workspace,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=(os.name == "posix"),
-    )
-    timed_out = False
     try:
-        output, _ = process.communicate(source.encode("utf-8"), timeout=timeout)
+        stdout, stderr = process.communicate(data, timeout=max(0.0, deadline - time.monotonic()))
+        return stdout, stderr, False
     except subprocess.TimeoutExpired:
-        timed_out = True
-        _kill(process)
-        output, _ = process.communicate()
+        pass
+    _kill(process)
+    try:
+        stdout, stderr = process.communicate(timeout=KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                with contextlib.suppress(OSError):
+                    stream.close()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=0.05)
+        stdout, stderr = b"", b""
+    return stdout or b"", stderr or b"", True
+
+
+def run_check(module, module_source, source, timeout=CHECK_TIMEOUT, sandbox=None):
+    """Run one check snippet against one copy of a task module, isolated from every other check (LOOP_SPEC §4.2a).
+
+    ``module`` is the module file name (``lab_x.py``) and ``module_source`` its bytes or text. The check runs in a
+    fresh temporary directory holding only that copy, as ``python -I -B``, so no bytecode cache is shared or reused
+    (inside the sandbox the standard library's own cache is read-only). With a
+    :class:`~autonomy_lab.confine.GradingSandbox` it runs confined (no network, read-only root, empty ``$HOME``, only
+    its own directory writable); with ``sandbox=None`` it runs unconfined, which is for tests only.
+
+    Passes exactly when the process exits 0 AND prints this check's random completion token after the check's last
+    statement. ``timeout`` bounds the whole check, including killing its process group and draining its output.
+    ``sandbox_error`` is set when the sandbox itself failed to start; the check then did not run at all.
+    """
+    if isinstance(module_source, str):
+        module_source = module_source.encode("utf-8")
+    ready = "lab-ready-" + secrets.token_hex(8)
+    token = "lab-done-" + secrets.token_hex(16)
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout - KILL_GRACE)
+    check_dir = Path(tempfile.mkdtemp(prefix="autonomy-lab-check-"))
+    try:
+        target = check_dir / module
+        target.write_bytes(module_source)
+        target.chmod(0o644)
+        inside = WORK_DIR if sandbox is not None else str(check_dir)
+        interpreter = sandbox.interpreter if sandbox is not None else sys.executable
+        # -B: no bytecode is written, and the fresh directory holds no __pycache__, so the module is always compiled
+        # from this copy. (A pycache_prefix would also redirect the standard library and recompile it every check.)
+        command = [interpreter, "-I", "-B", "-c", _CHECK_BOOTSTRAP, inside]
+        if sandbox is not None:
+            try:
+                command, env = sandbox.wrap(command, check_dir)
+            except ConfinementError as exc:
+                return _outcome(False, None, False, started, "", sandbox_error=f"ConfinementError: {exc}")
+        else:
+            env = {"PATH": SYSTEM_PATH, "HOME": str(check_dir), "TMPDIR": str(check_dir), "LANG": "C.UTF-8"}
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=check_dir,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=(os.name == "posix"),
+            )
+        except OSError as exc:
+            return _outcome(False, None, False, started, "", sandbox_error=f"cannot start the check: {exc}")
+        payload = (ready + "\n" + token + "\n").encode("ascii") + source.encode("utf-8")
+        stdout, stderr, timed_out = _communicate(process, payload, deadline)
+    finally:
+        shutil.rmtree(check_dir, ignore_errors=True)
+    out_lines = stdout.decode("utf-8", errors="replace").splitlines()
+    err_text = stderr.decode("utf-8", errors="replace")
     exit_code = None if timed_out else process.returncode
+    started_ok = ready in out_lines
+    sandbox_error = None
+    if sandbox is not None and not started_ok and not timed_out and sandbox_setup_failed(exit_code, err_text):
+        sandbox_error = err_text.strip()[-300:]
+    shown = [line for line in out_lines if line not in (ready, token)]
+    tail = ("\n".join(shown) + ("\n" if shown and err_text else "") + err_text)[-1200:]
+    passed = exit_code == 0 and started_ok and token in out_lines
+    return _outcome(passed, exit_code, timed_out, started, tail, sandbox_error=sandbox_error)
+
+
+def _outcome(passed, exit_code, timed_out, started, tail, sandbox_error=None):
     return {
-        "passed": exit_code == 0,
+        "passed": passed,
         "exit_code": exit_code,
         "timed_out": timed_out,
         "seconds": round(time.monotonic() - started, 3),
-        "output_tail": output.decode("utf-8", errors="replace")[-1200:],
+        "output_tail": tail,
+        "sandbox_error": sandbox_error,
     }
 
 
-def run_checks(jobs, workers=1, timeout=CHECK_TIMEOUT):
-    """Run [(workspace, source), ...] and return results in the same order."""
-    with tempfile.TemporaryDirectory(prefix="autonomy-lab-pycache-") as pycache:
-        if workers <= 1:
-            return [run_check(w, s, timeout, pycache) for w, s in jobs]
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(lambda job: run_check(job[0], job[1], timeout, pycache), jobs))
+def run_checks(jobs, workers=1, timeout=CHECK_TIMEOUT, sandbox=None):
+    """Run [(module, module_source, check_source), ...], each in isolation, and return results in the same order."""
+    if workers <= 1:
+        return [run_check(m, text, source, timeout, sandbox) for m, text, source in jobs]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(lambda job: run_check(*job, timeout=timeout, sandbox=sandbox), jobs))
 
 
-def grade_workspace(workspace, tasks, timeout=CHECK_TIMEOUT):
-    """Grade every decision of every task with its own held-out check process.
+def read_module(workspace, module):
+    """Return (bytes, None) for the designated module file in ``workspace``, or (None, reason) when it is unusable.
 
-    Returns (decision_results, details): {task_id: {decision_id: bool}} and the
-    same shape holding each check's exit code, timeout flag, duration and output tail.
+    Only a regular file at exactly ``<workspace>/<module>`` counts: a symlink, a directory, a FIFO or a file larger
+    than MAX_MODULE_BYTES is unusable, and a package or any other file with the same import name is never looked at.
+    """
+    path = Path(workspace) / module
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        return None, f"cannot open {module}: {exc.strerror or exc}"
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None, f"{module} is not a regular file"
+        if info.st_size > MAX_MODULE_BYTES:
+            return None, f"{module} is larger than {MAX_MODULE_BYTES} bytes"
+        chunks = []
+        while chunk := os.read(fd, 1 << 16):
+            chunks.append(chunk)
+            if sum(map(len, chunks)) > MAX_MODULE_BYTES:
+                return None, f"{module} is larger than {MAX_MODULE_BYTES} bytes"
+        return b"".join(chunks), None
+    except OSError as exc:
+        return None, f"cannot read {module}: {exc.strerror or exc}"
+    finally:
+        os.close(fd)
+
+
+def snapshot_modules(workspace, tasks):
+    """{task_id: (bytes or None, reason or None)} for each task's designated module, read once."""
+    return {task["id"]: read_module(workspace, task["module"]) for task in tasks}
+
+
+def grade_modules(modules, tasks, timeout=CHECK_TIMEOUT, sandbox=None, workers=None):
+    """Grade every decision of every task from module snapshots, each held-out check in its own isolated run.
+
+    ``modules`` is :func:`snapshot_modules` output. Checks come from the loaded bank, never from a workspace.
+    Returns (decision_results, details): {task_id: {decision_id: bool}} and the same shape holding each check's
+    exit code, timeout flag, duration and output tail. A task whose module is unusable fails every decision.
+    Raises GradingError when the sandbox could not start a check, which is not the candidate's failure.
+    Checks share no state, so they may run in parallel (``workers``, default up to 4).
     """
     jobs = []
     keys = []
-    for task in tasks:
-        for decision in task["decisions"]:
-            jobs.append((workspace, decision["heldout_check"]))
-            keys.append((task["id"], decision["id"]))
-    outcomes = run_checks(jobs, workers=1, timeout=timeout)
     results = {task["id"]: {} for task in tasks}
     details = {task["id"]: {} for task in tasks}
+    for task in tasks:
+        source, reason = modules[task["id"]]
+        for decision in task["decisions"]:
+            if source is None:
+                results[task["id"]][decision["id"]] = False
+                details[task["id"]][decision["id"]] = {
+                    "passed": False,
+                    "exit_code": None,
+                    "timed_out": False,
+                    "seconds": 0.0,
+                    "output_tail": reason,
+                    "sandbox_error": None,
+                }
+                continue
+            jobs.append((task["module"], source, decision["heldout_check"]))
+            keys.append((task["id"], decision["id"]))
+    workers = workers or min(4, os.cpu_count() or 1)
+    outcomes = run_checks(jobs, workers=workers, timeout=timeout, sandbox=sandbox)
     for (task_id, decision_id), outcome in zip(keys, outcomes):
+        if outcome["sandbox_error"]:
+            raise GradingError(f"grading sandbox failed for {task_id}/{decision_id}: {outcome['sandbox_error']}")
         results[task_id][decision_id] = outcome["passed"]
         details[task_id][decision_id] = outcome
     return results, details
 
 
-def _module_importable_without_workspace(module_name):
+def grade_workspace(workspace, tasks, timeout=CHECK_TIMEOUT, sandbox=None, workers=None):
+    """Snapshot each task's designated module from ``workspace``, then grade it with :func:`grade_modules`."""
+    return grade_modules(snapshot_modules(workspace, tasks), tasks, timeout=timeout, sandbox=sandbox, workers=workers)
+
+
+def default_grading_sandbox(results_dirs=(), allow_unconfined=False):
+    """The grading sandbox to use, or None (unconfined) only when ``allow_unconfined`` and bwrap is unavailable.
+
+    Raises GradingError when bwrap is unavailable and unconfined grading was not explicitly allowed.
+    """
+    reason = bwrap_unavailable_reason()
+    if reason is None:
+        try:
+            return GradingSandbox(results_dirs=results_dirs)
+        except ConfinementError as exc:
+            reason = str(exc)
+    if allow_unconfined:
+        return None
+    raise GradingError(
+        f"the grading sandbox is unavailable ({reason}); refusing to run agent-written code unconfined."
+        " Pass --unconfined-grading-for-tests only for tests on a host without bubblewrap."
+    )
+
+
+def _module_importable_without_workspace(module_name, interpreter=None):
     probe = "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec(sys.argv[1]) is None else 1)"
     with tempfile.TemporaryDirectory() as empty:
         result = subprocess.run(
-            [sys.executable, "-I", "-c", probe, module_name], cwd=empty, capture_output=True, timeout=CHECK_TIMEOUT
+            [interpreter or sys.executable, "-I", "-c", probe, module_name],
+            cwd=empty,
+            capture_output=True,
+            timeout=CHECK_TIMEOUT,
         )
     return result.returncode != 0
 
 
-def validate_task(task, workers=None):
+def validate_task(task, workers=None, sandbox=None):
     """Mechanical validation of one loaded task (LOOP_SPEC §4.1).
 
-    Beyond the four §4.1 rules it also requires that the assembled
-    visible_checks.py (every visible check) passes on the reference and fails on
-    every mutant, that the starter passes `preserve` decisions, and that filler
-    can reach the ±5% band for every set of contract decisions.
-    Returns a report dict with "errors", "warnings" and the pass/fail matrix
-    for the reference, the starter and every mutant.
+    Every check runs through the same isolated path as grading (:func:`run_check`, one fresh directory and
+    interpreter per check, confined by ``sandbox``), so a visible check cannot create state for a held-out check.
+    Every mutant, including each ``<decision>--<alt>`` alternative, must fail exactly its own decision's held-out
+    check, fail its own visible check and pass every other visible check. Beyond the §4.1 rules it also requires
+    that the assembled visible_checks.py (every visible check) passes on the reference and fails on every mutant,
+    that the starter passes `preserve` decisions, and that filler can reach the ±5% band for every set of contract
+    decisions. Returns a report dict with "errors", "warnings" and the pass/fail matrix for the reference, the
+    starter and every mutant.
     """
-    workers = workers or min(8, os.cpu_count() or 1)
+    workers = workers or min(16, os.cpu_count() or 1)
     errors = []
     warnings = []
     module = task["module"]
     decisions = task["decisions"]
     ids = [d["id"] for d in decisions]
-    if _module_importable_without_workspace(task["module_name"]):
+    interpreter = sandbox.interpreter if sandbox is not None else None
+    if _module_importable_without_workspace(task["module_name"], interpreter):
         errors.append(f"module {module} is importable without the workspace and would shadow the task module")
 
     candidates = {"reference": task["reference"], "starter": task["starter"]}
-    candidates.update({f"mutant:{did}": text for did, text in task["mutants"].items()})
+    candidates.update({f"mutant:{name}": text for name, text in sorted(task["mutants"].items())})
     all_visible = build_visible_checks([task], {task["id"]: {did: "check" for did in ids}})
     matrix = {}
-    with tempfile.TemporaryDirectory(prefix="autonomy-lab-validate-") as tmp:
-        jobs = []
-        keys = []
-        for index, (name, text) in enumerate(candidates.items()):
-            workspace = Path(tmp) / f"c{index}"
-            workspace.mkdir()
-            (workspace / module).write_text(text, encoding="utf-8")
-            for decision in decisions:
-                for kind in ("heldout", "visible"):
-                    jobs.append((workspace, decision[kind + "_check"]))
-                    keys.append((name, kind, decision["id"]))
-            # The assembled file must behave like its parts: a snippet that
-            # exits early or leaks state would hide later checks.
-            jobs.append((workspace, all_visible))
-            keys.append((name, "visible_file", None))
-        outcomes = run_checks(jobs, workers=workers)
+    jobs = []
+    keys = []
+    for name, text in candidates.items():
+        for decision in decisions:
+            for kind in ("heldout", "visible"):
+                jobs.append((module, text, decision[kind + "_check"]))
+                keys.append((name, kind, decision["id"]))
+        # The assembled file must behave like its parts: a snippet that
+        # exits early or leaks state would hide later checks.
+        jobs.append((module, text, all_visible))
+        keys.append((name, "visible_file", None))
+    outcomes = run_checks(jobs, workers=workers, sandbox=sandbox)
+    sandbox_errors = sorted({o["sandbox_error"] for o in outcomes if o["sandbox_error"]})
+    if sandbox_errors:
+        errors.append("the grading sandbox failed to start: " + sandbox_errors[0])
+        return {"id": task["id"], "valid": False, "errors": errors, "warnings": warnings, "matrix": {}}
     for (name, kind, did), outcome in zip(keys, outcomes):
         entry = matrix.setdefault(name, {"heldout": {}, "visible": {}, "visible_file": None})
         if kind == "visible_file":
@@ -412,21 +644,22 @@ def validate_task(task, workers=None):
     if not reference["visible_file"]:
         errors.append("reference fails the assembled visible_checks.py with every visible check")
 
-    for did in ids:
-        row = matrix[f"mutant:{did}"]
+    for name in sorted(task["mutants"]):
+        did = mutant_decision(name)
+        row = matrix[f"mutant:{name}"]
         if row["heldout"][did]:
-            errors.append(f"mutant {did!r} passes its own held-out check")
+            errors.append(f"mutant {name!r} passes its own held-out check")
         others = [o for o in ids if o != did and not row["heldout"][o]]
         if others:
-            errors.append(f"mutant {did!r} also fails the held-out checks of {', '.join(map(repr, others))}")
+            errors.append(f"mutant {name!r} also fails the held-out checks of {', '.join(map(repr, others))}")
         if row["visible"][did]:
-            errors.append(f"mutant {did!r} passes its own visible check")
+            errors.append(f"mutant {name!r} passes its own visible check")
         if row["visible_file"]:
-            errors.append(f"mutant {did!r} passes the assembled visible_checks.py with every visible check")
+            errors.append(f"mutant {name!r} passes the assembled visible_checks.py with every visible check")
         leaks = [o for o in ids if o != did and not row["visible"][o]]
         if leaks:
-            warnings.append(
-                f"mutant {did!r} also fails the visible checks of {', '.join(map(repr, leaks))}"
+            errors.append(
+                f"mutant {name!r} also fails the visible checks of {', '.join(map(repr, leaks))}"
                 " (those checks carry information about this decision)"
             )
 
@@ -450,8 +683,12 @@ def validate_task(task, workers=None):
     return {"id": task["id"], "valid": not errors, "errors": errors, "warnings": warnings, "matrix": matrix}
 
 
-def validate_bank(bank_dir, workers=None):
-    """Load and mechanically validate a whole bank. Never raises for task defects."""
+def validate_bank(bank_dir, workers=None, sandbox=None):
+    """Load and mechanically validate a whole bank. Never raises for task defects.
+
+    ``sandbox`` is the :class:`~autonomy_lab.confine.GradingSandbox` every check runs in; None runs them
+    unconfined (tests only). The report's hash is taken before loading and checked again afterwards.
+    """
     root = Path(bank_dir)
     report = {"bank": str(root), "task_bank_sha256": None, "valid": False, "errors": [], "tasks": []}
     try:
@@ -469,8 +706,13 @@ def validate_bank(bank_dir, workers=None):
             report["tasks"].append({"id": task_dir.name, "valid": False, "errors": errors, "warnings": []})
             continue
         loaded.append(task)
-        report["tasks"].append(validate_task(task, workers=workers))
+        report["tasks"].append(validate_task(task, workers=workers, sandbox=sandbox))
     report["errors"].extend(_bank_level_errors(loaded))
+    try:
+        if task_bank_sha256(root) != report["task_bank_sha256"]:
+            report["errors"].append("task bank changed during validation")
+    except TaskBankError as exc:
+        report["errors"].append(str(exc))
     report["valid"] = not report["errors"] and all(t["valid"] for t in report["tasks"])
     return report
 
@@ -492,6 +734,11 @@ def main(argv=None):
     validate = commands.add_parser("validate", help="mechanically validate a task bank")
     validate.add_argument("bank", type=Path)
     validate.add_argument("--json", action="store_true", help="print the full JSON report")
+    validate.add_argument(
+        "--unconfined-grading-for-tests",
+        action="store_true",
+        help="run checks without the bubblewrap grading sandbox when it is unavailable (tests only)",
+    )
     digest = commands.add_parser("hash", help="print task_bank_sha256")
     digest.add_argument("bank", type=Path)
     args = parser.parse_args(argv)
@@ -501,7 +748,14 @@ def main(argv=None):
         except TaskBankError as exc:
             parser.error(str(exc))
         return 0
-    report = validate_bank(args.bank)
+    try:
+        sandbox = default_grading_sandbox(
+            results_dirs=[str(args.bank.resolve())], allow_unconfined=args.unconfined_grading_for_tests
+        )
+    except (GradingError, ConfinementError) as exc:
+        parser.error(str(exc))
+    report = validate_bank(args.bank, sandbox=sandbox)
+    report["grading_confined"] = sandbox is not None
     print(json.dumps(report, indent=2, sort_keys=True) if args.json else format_report(report))
     return 0 if report["valid"] else 1
 

@@ -309,8 +309,9 @@ def _protected_trees(workspace, results_dirs):
     trees = {
         Path.home().resolve() / ".pi" / "agent" / "sessions",
         *_git_paths(Path(__file__).resolve().parent),
-        *_git_paths(workspace),
     }
+    if workspace is not None:
+        trees.update(_git_paths(workspace))
     for item in results_dirs:
         path = Path(item).expanduser()
         if not path.is_absolute():
@@ -320,12 +321,12 @@ def _protected_trees(workspace, results_dirs):
         trees.add(path)
     # Sibling trial workspaces, unless the workspace sits directly in a system directory. In pi_runner's
     # <run>/workspaces/<trial> layout, the whole run directory, including every trial's logs.
-    if str(workspace.parent) not in SHARED_ROOTS:
+    if workspace is not None and str(workspace.parent) not in SHARED_ROOTS:
         trees.add(workspace.parent)
-    if workspace.parent.name == "workspaces" and str(workspace.parent.parent) not in SHARED_ROOTS:
-        trees.add(workspace.parent.parent)
+        if workspace.parent.name == "workspaces" and str(workspace.parent.parent) not in SHARED_ROOTS:
+            trees.add(workspace.parent.parent)
     resolved = _resolved(trees)
-    if str(workspace) in resolved:
+    if workspace is not None and str(workspace) in resolved:
         raise ConfinementError("the workspace itself cannot be a protected path")
     return sorted(resolved)
 
@@ -344,7 +345,7 @@ def _hidden_paths(workspace, protected):
     for path in sorted(candidates):
         if path in UNHIDEABLE:
             raise ConfinementError(f"refusing to hide system path {path}")
-        if path == str(workspace):
+        if workspace is not None and path == str(workspace):
             raise ConfinementError("the workspace itself cannot be a hidden path")
         if not os.path.lexists(path) or any(_is_within(path, kept) for kept in [*FRESH_MOUNTS, *hidden]):
             continue
@@ -431,30 +432,7 @@ def confine(
     args = [bwrap, "--unshare-all", "--share-net", "--unshare-user", "--disable-userns"]
     args += ["--die-with-parent", "--new-session", "--seccomp", str(SECCOMP_FD)]
     args += ["--proc", "/proc", "--dev", "/dev"]
-    for path in FRESH_MOUNTS:
-        args += ["--tmpfs", path]
-    try:
-        root_entries = sorted(Path("/").iterdir())
-        for entry in root_entries:
-            if entry.name in SPECIAL_ROOT_ENTRIES:
-                continue
-            if entry.is_symlink():
-                args += ["--symlink", os.readlink(entry), str(entry)]
-            elif os.access(entry, os.R_OK | os.X_OK):
-                args += ["--ro-bind", str(entry), str(entry)]
-    except OSError as exc:
-        raise ConfinementError(f"cannot enumerate the host root: {exc}") from exc
-    args += _run_file_binds()
-    for path in hidden:
-        if Path(path).is_dir():
-            args += ["--tmpfs", path]
-        else:
-            args += ["--ro-bind", "/dev/null", path]
-    for path in [str(executable.parent), *extra_paths]:
-        if not Path(path).exists():
-            raise ConfinementError(f"read-only bind source does not exist: {path}")
-        if any(_is_within(path, h) for h in hidden):
-            args += ["--ro-bind", path, path]
+    args += _host_view(hidden, [str(executable.parent), *extra_paths])
     args += ["--perms", "0700", "--tmpfs", AGENT_DIR]
     # Read-only: a token refresh is the host's job (prepare_host_auth), so the confined process can neither corrupt
     # auth.json nor race a host Pi process over its lock directory. A refresh inside fails cleanly instead.
@@ -480,6 +458,117 @@ def confine(
     for name, value in sorted(env.items()):
         args += ["--setenv", name, value]
     return shim_command([*args, "--", str(executable), *command[1:]], program), env
+
+
+# --- grading profile (LOOP_SPEC §4.2a) --------------------------------------------------------------------------
+
+GRADING_HOME = "/grading-home"
+
+
+class GradingSandbox:
+    """Bubblewrap profile for one grading check: agent-written code runs here, so it gets less than Pi does.
+
+    Compared with :func:`confine`, the grading profile has no network (``--unshare-all`` without ``--share-net``), no
+    agent directory or credentials, an empty read-only ``$HOME`` at ``/grading-home``, and every tmpfs it mounts
+    (``/tmp``, ``/run``, ``/dev`` and the hidden trees) remounted read-only, so the check's own directory, bound at
+    ``/work``, is its only writable location. The same trees stay hidden (the repository with every worktree, the
+    user's Pi sessions, ``$HOME``, and the caller's ``results_dirs`` such as the run root and the task bank), and the
+    same seccomp filter and descriptor-closing shim apply.
+
+    The host-side work (protected trees, the host root view) is done once in the constructor; :meth:`wrap` only adds
+    the per-check bind. The interpreter is the real path of ``interpreter`` (default: this one); its installation
+    prefix is bound back read-only when it lies under a hidden tree, such as a uv-managed Python under ``$HOME``.
+    """
+
+    def __init__(self, results_dirs=(), interpreter=None):
+        self._bwrap = find_bwrap()
+        self._program = seccomp_program()
+        try:
+            self.interpreter = os.path.realpath(interpreter or sys.executable)
+            prefix = os.path.realpath(sys.base_prefix if interpreter is None else Path(self.interpreter).parents[1])
+            executable = os.access(self.interpreter, os.X_OK)
+        except SETUP_ERRORS as exc:
+            raise ConfinementError(f"cannot resolve the grading interpreter: {exc!r}") from exc
+        if not executable:
+            raise ConfinementError(f"grading interpreter is not executable: {self.interpreter}")
+        self.protected = _protected_trees(None, results_dirs)
+        hidden = _hidden_paths(None, self.protected)
+        rebinds = [prefix] if _is_within(self.interpreter, prefix) else [prefix, str(Path(self.interpreter).parent)]
+        for path in rebinds:
+            _check_bind(path, self.protected, "the grading interpreter")
+        args = [self._bwrap, "--unshare-all", "--unshare-user", "--disable-userns"]
+        args += ["--die-with-parent", "--new-session", "--seccomp", str(SECCOMP_FD)]
+        args += ["--proc", "/proc", "--dev", "/dev"]
+        args += _host_view(hidden, rebinds)
+        args += ["--tmpfs", GRADING_HOME]
+        self._writable_mounts = [*FRESH_MOUNTS, *(h for h in hidden if Path(h).is_dir()), GRADING_HOME, "/dev"]
+        self._prefix = args
+        self.env = {
+            "PATH": SYSTEM_PATH,
+            "HOME": GRADING_HOME,
+            "TERM": "dumb",
+            "TMPDIR": WORK_DIR,
+            "LANG": "C.UTF-8",
+        }
+
+    def wrap(self, command, check_dir):
+        """Wrap ``command`` (its first word must be :attr:`interpreter`) to run with ``check_dir`` at ``/work``."""
+        if not command or command[0] != self.interpreter:
+            raise ConfinementError("the grading profile only runs its own interpreter")
+        try:
+            check_dir = Path(check_dir).resolve()
+            if not check_dir.is_dir():
+                raise ConfinementError(f"check directory is not a directory: {check_dir}")
+        except SETUP_ERRORS as exc:
+            raise ConfinementError(f"cannot use the check directory {check_dir}: {exc!r}") from exc
+        for tree in self.protected:
+            if _is_within(str(check_dir), tree) or _is_within(tree, str(check_dir)):
+                raise ConfinementError(f"check directory {check_dir} overlaps the protected path {tree}")
+        args = [*self._prefix, "--bind", str(check_dir), WORK_DIR, "--chdir", WORK_DIR, "--remount-ro", "/"]
+        for path in self._writable_mounts:
+            args += ["--remount-ro", path]
+        args.append("--clearenv")
+        for name, value in sorted(self.env.items()):
+            args += ["--setenv", name, value]
+        return shim_command([*args, "--", *command], self._program), dict(self.env)
+
+
+def grading_sandbox_or_none(results_dirs=()):
+    """A :class:`GradingSandbox`, or None when bwrap cannot run here. For tests that may fall back to unconfined."""
+    if bwrap_unavailable_reason():
+        return None
+    return GradingSandbox(results_dirs=results_dirs)
+
+
+def _host_view(hidden, rebinds):
+    """bwrap options for the shared host view: fresh mounts, the read-only host root, the hidden trees, and the
+    ``rebinds`` (host paths that must stay visible at their own path even though they lie under a hidden tree)."""
+    args = []
+    for path in FRESH_MOUNTS:
+        args += ["--tmpfs", path]
+    try:
+        root_entries = sorted(Path("/").iterdir())
+        for entry in root_entries:
+            if entry.name in SPECIAL_ROOT_ENTRIES:
+                continue
+            if entry.is_symlink():
+                args += ["--symlink", os.readlink(entry), str(entry)]
+            elif os.access(entry, os.R_OK | os.X_OK):
+                args += ["--ro-bind", str(entry), str(entry)]
+    except OSError as exc:
+        raise ConfinementError(f"cannot enumerate the host root: {exc}") from exc
+    args += _run_file_binds()
+    for path in hidden:
+        if Path(path).is_dir():
+            args += ["--tmpfs", path]
+        else:
+            args += ["--ro-bind", "/dev/null", path]
+    for path in rebinds:
+        if not Path(path).exists():
+            raise ConfinementError(f"read-only bind source does not exist: {path}")
+        if any(_is_within(path, h) for h in hidden):
+            args += ["--ro-bind", path, path]
+    return args
 
 
 def _ordered_resolved(paths):
