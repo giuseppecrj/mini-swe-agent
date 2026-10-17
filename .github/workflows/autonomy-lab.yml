@@ -16,7 +16,7 @@ jobs:
   smoke:
     name: Verify cloud testbed
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Check out experiment branch
         uses: actions/checkout@v4
@@ -43,6 +43,11 @@ jobs:
           assert len((root / "trials.jsonl").read_text().splitlines()) == 8
           print("Cloud smoke report validated: 8 trial configurations")
           PY
+      - name: Build isolated coding-agent image (no model calls)
+        run: docker build --progress plain -t autonomy-lab-agent -f autonomy_lab/Dockerfile .
+      - name: Verify agent CLI starts in its container
+        run: |
+          docker run --rm --read-only --tmpfs /tmp:rw,nosuid,size=256m             -e MSWEA_CONFIGURED=1 autonomy-lab-agent --help > /dev/null
       - name: Upload experiment output
         if: always()
         uses: actions/upload-artifact@v4
