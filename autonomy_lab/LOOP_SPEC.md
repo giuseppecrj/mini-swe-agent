@@ -151,6 +151,18 @@ P6 uses its own rule, given below.
 
 H4 is supported only if P6 is supported at both breadths. It is falsified if P6 is falsified at either breadth.
 
+**Pre-registration clarifications** (added before freeze, after the T5 review; approved at G2):
+
+- **Invalid runs.** If any §2.4 validity gate fails, every prediction from that run is reported as `invalid`, never supported or falsified. Descriptive statistics may still be shown, clearly labelled. A record with missing `runtime_matches_request` counts as a mismatch. The infrastructure-failure gate is failed attempts ÷ distinct trials.
+- **Decision populations.**
+  - P1 and P5(a)/(b) use `arbitrary` decisions, as written.
+  - P2, P3, P4 and P5(c) are each evaluated in two strata: `arbitrary` and `inferable`. A component is supported only if it is supported in both strata, and falsified if it is falsified in either. A stratum with fewer than 2 tasks contributing is inconclusive.
+  - `preserve` decisions measure non-regression only and are reported descriptively.
+- **Sign test (P1(a)).** Ties (a per-task effect of exactly 0) count against whichever direction is being tested. Support needs at least as many positive tasks as an exact binomial test over all tasks requires (one-sided p < 0.025, so two-sided p < 0.05, with ties counted as non-positive). Falsification uses the mirror rule.
+- **P4 identification.** Each decision missing either exposure stratum after exclusions is counted and reported. If any decision is unidentified, P4 cannot be supported; it can only be falsified or inconclusive.
+- **P5 completeness.** Every eligible decision must be judged. If any are unjudged, or κ is missing, non-finite or below 0.6, P5 is inconclusive.
+- **Power targets (T5).** Every power figure is reported with its Monte Carlo standard error. Designs near the 80% threshold (within 2 standard errors) are re-simulated with at least 1,000 simulations and the production bootstrap count. E3 is sized on joint H4 power, not on each breadth separately. P5 power is simulated too.
+
 **Authorship (descriptive only):** if you author any tasks (D3), P1's per-task effects are also reported separately for your tasks and the coordinator's. With so few tasks, no test is run.
 
 ### 3.3 Guardrails
@@ -182,10 +194,17 @@ neutral.md       filler: one neutral, accurate sentence per line that settles no
 - Every `visible_check` and `heldout_check` is a self-contained Python snippet. It runs as its own process with the workspace as working directory, imports the module by name, and passes exactly when it exits 0.
 - Every check gets the same per-check timeout of 10 s, and runs with `python -I` plus the workspace on `sys.path`.
 
+**Alternative mutants and construct rules** (added before freeze, after the T4 audit):
+
+- **Alternatives for arbitrary decisions.** Every `arbitrary` decision has one mutant per reasonable alternative named in `LABELS.md`, with at least 2 in total: `mutants/<decision-id>.py` plus `mutants/<decision-id>--<alt>.py`. Each one implements a natural alternative policy, not a contrived bug. Every mutant must fail its own decision's held-out and visible checks and pass all other decisions' held-out and visible checks.
+- **One choice per decision.** A decision is a single policy choice. A bundle such as "sorted and deduplicated" or "empty, negative or all-zero inputs raise" is split into separate decisions, or narrowed to one.
+- **No settling outside the channels.** The brief, the starter's docstrings, names, signature and comments, and `neutral.md` must not state or imply any decision's behaviour. `neutral.md` describes purpose and context only: no output format, validation, ordering, boundary, allocation or error behaviour.
+- **Matching coverage.** A decision's visible and held-out checks cover the same input classes (types, error families, boundary kinds), with different concrete values. Both stay within the declared input domain.
+
 **Mechanical bank validation** (T1 provides it; T4 must pass it):
 
 - `reference.py` passes every held-out and visible check.
-- `mutants/<d>.py` fails exactly decision `d`'s held-out check, and fails `d`'s visible check.
+- Every mutant of decision `d`, including the `--<alt>` variants, fails exactly `d`'s held-out check, fails `d`'s visible check, and passes every other visible check.
 - The starter fails at least half of all held-out checks, including at least 2 `arbitrary` decisions.
 - Each task has 4–8 decisions, at least 2 of them `arbitrary`.
 
