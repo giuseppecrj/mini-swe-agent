@@ -250,9 +250,10 @@ class TaskBankValidationTests(unittest.TestCase):
         def change(decisions):
             for decision in decisions:
                 decision["visible_check"] += marker
-            decisions[0]["heldout_check"] += needs
+            # The last decision's held-out check: the old validator ran every earlier visible check first.
+            decisions[-1]["heldout_check"] += needs
 
-        self.defect(self.edit_decisions(change), "reference fails the held-out check of 'lowercase'")
+        self.defect(self.edit_decisions(change), "reference fails the held-out check of 'strip'")
 
     def test_starter_failing_too_few_arbitrary_decisions(self):
         def change(decisions):
@@ -525,7 +526,7 @@ class GradingTests(unittest.TestCase):
             """\
             import importlib._bootstrap_external as _external
             import importlib.util, os, tempfile
-            _PLACES = [".", os.path.expanduser("~"), tempfile.gettempdir(), "/tmp", "/var/tmp", "/dev/shm"]
+            _PLACES = [".", os.path.expanduser("~"), tempfile.gettempdir(), *SHARED]
             _seen = any(os.path.exists(os.path.join(p, "lab-poison-marker")) for p in _PLACES)
             for _place in _PLACES:
                 try:
@@ -547,7 +548,10 @@ class GradingTests(unittest.TestCase):
                 exec(STARTER)
             """
         )
-        module = f"REFERENCE = {self.slug['reference']!r}\nSTARTER = {self.slug['starter']!r}\n" + poisoner
+        # Host-wide directories are only isolated by the sandbox; unconfined (tests without bwrap) they are shared.
+        shared = ["/tmp", "/var/tmp", "/dev/shm"] if SANDBOX is not None else []
+        module = f"REFERENCE = {self.slug['reference']!r}\nSTARTER = {self.slug['starter']!r}\nSHARED = {shared!r}\n"
+        module += poisoner
         results, _ = self.grade_slug(module)
         self.assertEqual(results, SLUG_STARTER)
         # The same holds during validation: a poisoned starter fails exactly what the clean starter fails.
