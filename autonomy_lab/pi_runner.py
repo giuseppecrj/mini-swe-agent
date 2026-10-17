@@ -132,17 +132,17 @@ def execute_pi(workspace, prompt, model, pi_binary, timeout):
 
 
 def safe_trial_scope(workspace, selected, expected_checks, expected_prompt):
-    """Detect alteration of public tests or the specification."""
-    if (workspace / "visible_checks.py").read_bytes() != expected_checks:
-        return False
-    if (workspace / "prompt.txt").read_bytes() != expected_prompt:
-        return False
-    # Modules are the only allowed source edits. Data/log files created by the
-    # runner are outside the task source set, so they do not affect this check.
-    for task in selected:
-        if not (workspace / task["file"]).is_file():
+    """Detect alteration or deletion of public tests or the specification."""
+    try:
+        if (workspace / "visible_checks.py").read_bytes() != expected_checks:
             return False
-    return True
+        if (workspace / "prompt.txt").read_bytes() != expected_prompt:
+            return False
+        # Modules are the only allowed source edits. Data/log files created by
+        # the runner are not used to determine acceptance.
+        return all((workspace / task["file"]).is_file() for task in selected)
+    except OSError:
+        return False
 
 
 def pi_version(pi_binary):
