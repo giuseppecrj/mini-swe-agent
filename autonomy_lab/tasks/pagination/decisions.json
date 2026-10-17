@@ -18,7 +18,7 @@
     "label": "arbitrary",
     "contract": "Page numbers start at 1, so page 1 holds the first per_page items, and get_page raises ValueError for a page number below 1.",
     "visible_check": "from pages import get_page\nassert list(get_page(list(range(10)), 2, 4)) == [4, 5, 6, 7], list(get_page(list(range(10)), 2, 4))\nfor page in (0, -2):\n    try:\n        get_page(list(range(5)), page, 5)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"page {page} should raise ValueError\")\n",
-    "heldout_check": "from pages import get_page\nassert list(get_page(list(\"abcdefg\"), 1, 3)) == [\"a\", \"b\", \"c\"]\nassert list(get_page(list(\"abcdefg\"), 3, 3)) == [\"g\"]\nfor page in (0, -1):\n    try:\n        get_page([1, 2, 3], page, 2)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(page)\n"
+    "heldout_check": "from pages import get_page\nassert list(get_page(list(\"abcdefghi\"), 1, 3)) == [\"a\", \"b\", \"c\"]\nassert list(get_page(list(\"abcdefghi\"), 3, 3)) == [\"g\", \"h\", \"i\"]\nfor page in (0, -1):\n    try:\n        get_page([1, 2, 3], page, 2)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(page)\n"
   },
   {
     "id": "count-rounds-up",

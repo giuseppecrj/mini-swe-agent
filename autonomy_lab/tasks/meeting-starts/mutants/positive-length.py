@@ -4,6 +4,8 @@ def meeting_starts(busy, day_start, day_end, length, step=15):
     All times are whole minutes after midnight. `busy` is a list of
     (start, end) pairs, and the working day runs from day_start to day_end.
     """
+    if length <= 0:
+        return []
     if day_end <= day_start:
         raise ValueError("day_end must be after day_start")
     if step <= 0:

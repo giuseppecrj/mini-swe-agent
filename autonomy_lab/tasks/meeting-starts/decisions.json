@@ -2,7 +2,7 @@
   {
     "id": "avoids-busy",
     "label": "preserve",
-    "contract": "The result lists, in ascending order, every candidate start whose meeting does not overlap the inside of any busy interval, whatever order the busy intervals are given in.",
+    "contract": "Away from cases where a meeting would start or end exactly at a busy interval's endpoint or at day_end, the result lists, in ascending order, exactly the candidate starts whose meeting avoids every busy interval, whatever order the busy intervals are given in.",
     "visible_check": "from slots import meeting_starts\ngot = meeting_starts([(785, 795), (705, 730)], 660, 845, 20, step=20)\nassert got == [660, 680, 740, 760, 800, 820], got\n",
     "heldout_check": "from slots import meeting_starts\nassert meeting_starts([(605, 650)], 540, 715, 30, step=30) == [540, 570, 660]\nassert meeting_starts([(905, 925), (845, 860)], 840, 965, 30, step=30) == [870, 930]\n"
   },
@@ -17,7 +17,7 @@
     "id": "invalid-busy-interval",
     "label": "arbitrary",
     "contract": "A busy interval whose end is not after its start raises ValueError.",
-    "visible_check": "from slots import meeting_starts\nfor busy in ([(800, 760)], [(700, 700)]):\n    try:\n        meeting_starts(busy, 540, 1020, 30)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(busy)!r} should raise ValueError\")\n",
+    "visible_check": "from slots import meeting_starts\nfor busy in ([(800, 760)], [(600, 630), (1100, 1050)], [(700, 700)]):\n    try:\n        meeting_starts(busy, 540, 1020, 30)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(busy)!r} should raise ValueError\")\n",
     "heldout_check": "from slots import meeting_starts\nfor busy in ([(650, 600)], [(540, 570), (1200, 1100)], [(615, 615)]):\n    try:\n        meeting_starts(busy, 480, 720, 30)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(busy)!r} should raise ValueError\")\n"
   },
   {

@@ -2,6 +2,6 @@
   "id": "histogram-bins",
   "module": "binning.py",
   "brief": "histogram() counts are wrong",
-  "version": 2,
+  "version": 3,
   "author": "coordinator"
 }

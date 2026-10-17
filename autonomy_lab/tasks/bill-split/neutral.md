@@ -4,10 +4,10 @@ A common case is one person paying for a group meal.
 A typical call splits a bill between two and six people.
 Weights often come from head counts or nights stayed.
 The results are shown next to each person's name.
-Other currencies use the same function with their minor units.
+Bills in other currencies go through the same helper.
 The module uses only the Python standard library.
 The function does not modify the weights list it receives.
-The function returns a new list on each call.
+The function is usually called once per bill.
 The web app and the reporting job share this helper.
 A monthly statement lists each person's part of shared costs.
 Unit tests call it with small literal amounts.

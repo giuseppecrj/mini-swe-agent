@@ -36,10 +36,11 @@ autonomy_lab/tasks/<task-id>/
   `binning`, `slots`, `options`, `pages`, `ports`, `tables`.
 - `label` is one of `inferable`, `arbitrary` or `preserve` (definitions below).
 - `decisions.json` order is prompt order. Keep it stable.
-- An `arbitrary` decision has at least two mutants: `<id>.py` and at least one
-  `<id>--<alt>.py`. `<alt>` is a short lowercase name for the alternative
-  policy, such as `--last-wins` or `--clamped`. Other labels have exactly
-  `<id>.py`.
+- An `arbitrary` decision has one mutant per reasonable alternative named in
+  LABELS.md: `<id>.py` for the first, plus `<id>--<alt>.py` for each further
+  one. A binary choice (the graded behaviour plus one alternative) has just
+  `<id>.py`. `<alt>` is a short lowercase name for the alternative policy,
+  such as `--last-wins` or `--clamped`. Other labels have exactly `<id>.py`.
 
 ## Rules every task must meet
 
@@ -76,7 +77,10 @@ By construction (checked by review and the cross-family audit; §4.1
   plausibly write for a different policy, not a contrived bug. "No check at
   all" counts only when the result is a coherent behaviour, such as "a zero
   lifetime means entries expire at once" or "Python's own
-  `ZeroDivisionError`". Name each alternative in LABELS.md.
+  `ZeroDivisionError`". It does not count when the guardless code just
+  produces nonsense, such as candidate starts for a negative meeting length
+  or a negative page count. Do not invent alternatives to reach a count.
+  Name each alternative in LABELS.md.
 - **No settling outside the channels.** The brief, the starter's docstrings,
   names, signature and comments, and `neutral.md` must not state or imply any
   decision's behaviour. The audit found these leaks: a docstring saying
@@ -84,6 +88,10 @@ By construction (checked by review and the cross-family audit; §4.1
   contract defining expiry as `now < t + ttl` (also the lifetime rule), filler
   saying "the second line separates headers from data" (it settled empty
   tables), and filler mentioning `int()`, firewalls or opening listeners.
+  The second audit found two more: a starter docstring describing the table
+  format without limiting it to tables with rows (it again settled empty
+  tables), and a docstring promising "the number of seconds" (it argued
+  against returning `None` for blank text).
 - **Prerequisites are not decisions.** Behaviour that many checks rely on, and
   that you do not want to measure, goes in the starter's docstring as a fixed
   fact. Examples: "the result ... adds up to total_cents", "a sorted list of
@@ -94,12 +102,23 @@ By construction (checked by review and the cross-family audit; §4.1
   *and* float), error families (zero *and* negative, reversed *and*
   zero-length), and boundary kinds (doubled, leading *and* trailing commas).
   Both stay inside the domain the starter declares; for example, use `[]`,
-  not `()`, if the docstring says "list". A class with only one value, such
-  as the empty string, may repeat across channels, but each check must also
-  contain other values.
+  not `()`, if the docstring says "list". Gaps the second audit found, each
+  shown by a natural implementation that passed every visible check: an
+  invalid interval outside the working day, trailing spaces after a value,
+  and partly overlapping ranges, each present only in the held-out check.
+- **Singleton exception (§4.1).** Where an input class has exactly one
+  member, such as the empty string `""`, both checks may use it, provided
+  each also includes different inputs for the rest of the class (such as
+  distinct whitespace-only strings). For that sub-case, held-out grading
+  measures the visible behaviour, not generalization. `blank-text` and
+  `empty-spec` use this exception.
 - **Contracts.** Each contract sentence states the graded behaviour exactly,
   agrees with both checks, and settles only its own decision. Contract
-  examples should not reuse held-out inputs.
+  examples should not reuse held-out inputs. A broad contract can settle a
+  sibling by implication: "every start that does not overlap the inside of
+  a busy interval" also admits back-to-back meetings, and "text that is not
+  a duration raises" also covers blank text. Scope such a contract away from
+  the cases a sibling owns, or list its classes.
 - **The brief** is a terse issue title, such as "histogram() counts are
   wrong". It must not hint at any decision.
 
@@ -109,21 +128,22 @@ By construction (checked by review and the cross-family audit; §4.1
   normal domain conventions would pick the graded behaviour with high
   confidence (over 80%). Examples: a range "8000-8002" includes both ends;
   `page_count(25, 10) == 3`; a value may contain "=" after the first one.
-- **arbitrary**: at least two other reasonable behaviours exist, and the
+- **arbitrary**: at least one other reasonable behaviour exists, and the
   graded one is just one of them. Examples: raise vs return `None` vs return 0;
-  last-wins vs first-wins vs reject; LRU vs FIFO vs oldest-write eviction.
+  last-wins vs first-wins vs reject; an entry expiring at exactly its
+  lifetime vs just after it.
 - **preserve**: behaviour the starter already has, correctly, that a rewrite must
   not break. Example: `parse_ports` already raises `ValueError` for `"http"`.
 
 ## Writing good arbitrary decisions
 
-- **You need two alternatives besides the graded one.** A purely binary
-  choice (inclusive vs exclusive boundary, 0- vs 1-based pages, sorted vs
-  input order, trailing spaces kept or not, `page_count(0)` = 0 vs 1) cannot
-  be an arbitrary decision on its own. Either merge it with a dependent
-  choice into one decision with more options, as `page-numbering` does, or
-  leave it ungraded. If you leave it ungraded, keep it out of **every**
-  check, and list it under "deliberately ungraded" in LABELS.md.
+- **One natural alternative is enough.** A binary choice (inclusive vs
+  exclusive boundary, 0- vs 1-based pages, trailing spaces kept or not) is a
+  valid arbitrary decision with a single mutant, as `expiry-boundary` and
+  `negative-total` are. Do not invent contrived alternatives to reach a
+  count. When one choice only exists under another, merge them, as
+  `page-numbering` does. A choice you leave ungraded must stay out of
+  **every** check, and is listed under "deliberately ungraded" in LABELS.md.
 - **Make the starter's current behaviour one of the alternatives**, or make the
   starter crash on that input. Either way the starter fails the check without
   the check being contrived.
@@ -164,6 +184,11 @@ draft with alternatives the author had not tried. These techniques fixed it:
 - **Never reach a precondition through another graded behaviour.** The old
   `order-status` reached `delivered` by calling the graded `deliver`
   transition. Call the function directly on the state you need.
+- **Keep sibling policies out of the inputs.** Numbering checks in
+  `pagination` ask only for full pages, so whether a partly filled last page
+  exists (`count-rounds-up`) cannot leak in. Cache checks call `put` and
+  `get` in time order, or use a fresh cache, so a cache that rejects time
+  running backwards still passes.
 - **Pick inputs that separate all alternatives at once.** `leftover-order` uses
   inputs (found by a small brute-force search) where every listed alternative,
   and three more plausible ones, gives a different answer, while the exact and
@@ -182,9 +207,12 @@ implementation style*. Examples: an `OrderedDict` LRU, a loop instead of
 ungraded choice. Keep them outside the repository. Each probe must pass every
 sibling decision's checks. If it fails a sibling check, either the probe
 changes two decisions at once (fix the probe) or the checks are coupled (fix
-the checks). During this revision, the alternative mutants and probes found
-four couplings and two coverage gaps that the first draft's mutants hid. A probe that also passes its own target's checks shows a coverage
-gap: add an input that separates it, unless it implements the graded policy.
+the checks). A probe must also fail its own decision in both channels or in
+neither: failing only the held-out check shows a coverage gap, so add an
+input of that class to the visible check. A probe that passes both of its
+own checks shows a gap too, unless it implements the graded policy. Over two
+revisions, alternative mutants and independent probes found couplings and
+coverage gaps that the authors' own mutants hid.
 
 ## neutral.md
 
@@ -208,6 +236,10 @@ all-contract prompt length. So:
     typical users" (mount options make bare keys flags), and "callers pass the
     returned seconds straight to timer functions" (it implies a result is
     never `None`).
+  - Removed after the second audit: "turns such a string into a count of
+    seconds", "callers use the result for timeouts", "turns a specification
+    into a list of integers", "values can be integers or floats", and "the
+    function returns a new list".
 
 ## Minimal filled-in example
 
@@ -219,7 +251,7 @@ six decisions and nine mutants.
 ```json
 {"id": "port-spec", "module": "ports.py",
  "brief": "parse_ports() returns wrong results for some specs",
- "version": 2, "author": "coordinator"}
+ "version": 3, "author": "coordinator"}
 ```
 
 `starter.py` (weak: exclusive ranges, keeps duplicates, no upper bound,
@@ -270,13 +302,14 @@ every configuration convention.
 ## Checklist before handing a task over
 
 - [ ] Every file in the schema exists: one `<id>.py` mutant per decision, plus
-      `<id>--<alt>.py` until each arbitrary decision has at least two.
+      one `<id>--<alt>.py` for each further alternative named in LABELS.md.
 - [ ] The bank validator passes for the task: reference, full mutation matrix
       (held-out and visible) and starter rule. The official validator
       (`python3 -m autonomy_lab.taskbank validate autonomy_lab/tasks`) is being
       extended to accept `--<alt>` mutants. Until then it reports them as
       unknown files.
-- [ ] Probes of each decision in a different style pass every sibling check.
+- [ ] Probes of each decision in a different style pass every sibling check,
+      and fail their own decision in both channels or in neither.
 - [ ] Every contract agrees with both of its checks and leaks no sibling
       decision.
 - [ ] Visible and held-out checks cover the same input classes with different

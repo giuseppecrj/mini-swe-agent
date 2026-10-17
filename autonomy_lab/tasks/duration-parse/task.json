@@ -2,6 +2,6 @@
   "id": "duration-parse",
   "module": "durations.py",
   "brief": "parse_duration() mishandles many duration strings",
-  "version": 2,
+  "version": 3,
   "author": "coordinator"
 }

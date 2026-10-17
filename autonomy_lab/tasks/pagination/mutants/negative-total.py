@@ -6,6 +6,8 @@ def _check_per_page(per_page):
 def page_count(total, per_page):
     """Return the number of pages for `total` items shown `per_page` at a time."""
     _check_per_page(per_page)
+    if total < 0:
+        return 0
     return -(-total // per_page)
 
 

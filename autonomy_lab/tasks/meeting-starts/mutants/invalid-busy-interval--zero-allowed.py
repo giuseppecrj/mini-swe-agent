@@ -13,6 +13,7 @@ def meeting_starts(busy, day_start, day_end, length, step=15):
     for b_start, b_end in busy:
         if b_end < b_start:
             raise ValueError(f"busy interval must end after it starts: {(b_start, b_end)}")
+    busy = [(b_start, b_end) for b_start, b_end in busy if b_end > b_start]
     starts = []
     t = day_start
     while t + length <= day_end:

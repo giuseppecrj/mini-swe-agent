@@ -1,10 +1,7 @@
 Duration strings write lengths of time in a compact form.
 They often appear in configuration files and command-line flags.
-parse_duration turns such a string into a count of seconds.
-Callers use the result for timeouts and retry delays.
-Cache lifetimes are another common use of the result.
-A minute has 60 seconds and an hour has 3600 seconds.
-A day has 86400 seconds.
+parse_duration reads such a string written by a person.
+Settings for many different services are written this way.
 The unit table is defined once at the top of the module.
 The function is pure and keeps no state between calls.
 It has no side effects such as logging or printing.
@@ -16,3 +13,5 @@ The function takes exactly one argument, the text to parse.
 Durations are a common kind of setting in service configuration.
 Several services share this helper to read durations the same way.
 Operators edit these settings by hand.
+Short strings are easier to type than long spelled-out forms.
+Many tools from different vendors use similar notations.

@@ -38,7 +38,7 @@
     "id": "surrounding-spaces",
     "label": "arbitrary",
     "contract": "Spaces around keys and values are ignored, so \"a = b\" means the same as \"a=b\".",
-    "visible_check": "from options import parse_options\nfor text, want in ((\"x = y, z=w\", {\"x\": \"y\", \"z\": \"w\"}),):\n    got = parse_options(text)\n    assert got == want, (text, got)\n",
-    "heldout_check": "from options import parse_options\nfor text, want in ((\"k =v ,  m= n\", {\"k\": \"v\", \"m\": \"n\"}),):\n    got = parse_options(text)\n    assert got == want, (text, got)\n"
+    "visible_check": "from options import parse_options\nfor text, want in ((\"x = y, z=w\", {\"x\": \"y\", \"z\": \"w\"}), (\"  host=db  ,mode =fast\", {\"host\": \"db\", \"mode\": \"fast\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from options import parse_options\nfor text, want in ((\"k =v ,  m= n\", {\"k\": \"v\", \"m\": \"n\"}), (\"ab= cd ,ef  =gh\", {\"ab\": \"cd\", \"ef\": \"gh\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n"
   }
 ]

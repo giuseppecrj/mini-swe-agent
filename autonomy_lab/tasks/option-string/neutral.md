@@ -1,6 +1,6 @@
 Option strings let operators tune a service with one setting.
 They appear in environment variables and deployment manifests.
-parse_options turns such a string into a dictionary.
+parse_options reads such a string for the service.
 The service reads its options once when it starts.
 Keys are short names chosen by the service authors.
 Several services share this helper to read options the same way.

@@ -1,11 +1,11 @@
 histogram counts measurements for a summary chart.
-Dashboards draw the resulting counts as bars.
+Dashboards show these summary charts to engineers.
 Typical inputs are response times or file sizes.
-Values can be integers or floats, and so can the edges.
+Measurements come from monitoring agents and log files.
 The function does not modify the values or the edges.
 The module uses only the Python standard library.
 Analysts read the counts to see how measurements spread.
-Callers can sum the counts or plot them.
+Analysts compare the charts from week to week.
 Tests call the function with short literal lists.
 The function does not read files or print anything.
 The function takes two arguments, the values and the edges.

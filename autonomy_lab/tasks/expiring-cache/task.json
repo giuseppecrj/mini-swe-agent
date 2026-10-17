@@ -2,6 +2,6 @@
   "id": "expiring-cache",
   "module": "expiring_cache.py",
   "brief": "ExpiringCache needs a correctness pass",
-  "version": 2,
+  "version": 3,
   "author": "coordinator"
 }

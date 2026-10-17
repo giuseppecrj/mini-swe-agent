@@ -2,7 +2,7 @@
   {
     "id": "malformed-raises",
     "label": "preserve",
-    "contract": "In a non-empty spec, an item that is not a port number or a low-high range of port numbers, such as a word or a dangling dash, raises ValueError.",
+    "contract": "In a spec that is not empty or all whitespace, an item that is a word, ends in a dash, has more than one dash, or has letters after its digits raises ValueError.",
     "visible_check": "from ports import parse_ports\nfor spec in (\"ssh\", \"22,web\", \"9-\", \"4-5-6\", \"2x\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n",
     "heldout_check": "from ports import parse_ports\nfor spec in (\"http\", \"443,x\", \"80-\", \"1-2-3\", \"8o\"):\n    try:\n        parse_ports(spec)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_ports({spec!r}) should raise ValueError\")\n"
   },
@@ -24,7 +24,7 @@
     "id": "duplicate-ports",
     "label": "arbitrary",
     "contract": "Each port appears once in the result, even when the spec lists it more than once or its ranges overlap.",
-    "visible_check": "from ports import parse_ports\nassert parse_ports(\"9,3,3\") == [3, 9], parse_ports(\"9,3,3\")\ngot = parse_ports(\"5-8,6\")\nassert len(got) == len(set(got)) and 6 in got, got\n",
+    "visible_check": "from ports import parse_ports\nassert parse_ports(\"9,3,3\") == [3, 9], parse_ports(\"9,3,3\")\ngot = parse_ports(\"5-8,6\")\nassert len(got) == len(set(got)) and 6 in got, got\ngot = parse_ports(\"40-46,43-50\")\nassert len(got) == len(set(got)) and {43, 44, 45} <= set(got), got\n",
     "heldout_check": "from ports import parse_ports\nassert parse_ports(\"443,80,80\") == [80, 443]\ngot = parse_ports(\"20-25,22-30\")\nassert len(got) == len(set(got)) and {22, 23, 24} <= set(got), got\n"
   },
   {

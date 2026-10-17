@@ -2,6 +2,6 @@
   "id": "table-render",
   "module": "tables.py",
   "brief": "render_table() output needs fixing",
-  "version": 2,
+  "version": 3,
   "author": "coordinator"
 }

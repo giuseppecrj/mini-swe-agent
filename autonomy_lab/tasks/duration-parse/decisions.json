@@ -2,14 +2,14 @@
   {
     "id": "combined-units",
     "label": "preserve",
-    "contract": "A duration can combine components with different units, as in \"1h30m\", and the result is their total in seconds.",
+    "contract": "A duration can combine components with different units, as in \"4h45m\", and the result is their total in seconds.",
     "visible_check": "from durations import parse_duration\nfor text, want in ((\"2h15m\", 8100), (\"1d1s\", 86401)):\n    got = parse_duration(text)\n    assert got == want, (text, got)\n",
     "heldout_check": "from durations import parse_duration\nfor text, want in ((\"1h30m\", 5400), (\"3d4h5m6s\", 273906)):\n    got = parse_duration(text)\n    assert got == want, (text, got)\n"
   },
   {
     "id": "invalid-text",
     "label": "inferable",
-    "contract": "Text that is not a duration raises ValueError: for example a word, a number with an unknown unit, a unit with no number, or a valid duration followed by stray characters.",
+    "contract": "A word, a number with an unknown unit, a unit with no number, or a valid duration followed by stray characters raises ValueError.",
     "visible_check": "from durations import parse_duration\nfor text in (\"abc\", \"3x\", \"h\", \"4m!\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n",
     "heldout_check": "from durations import parse_duration\nfor text in (\"soon\", \"7w\", \"m\", \"5h-\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n"
   },
@@ -24,7 +24,7 @@
     "id": "repeated-unit",
     "label": "arbitrary",
     "contract": "A duration that uses the same unit more than once, such as \"1h1h\", raises ValueError.",
-    "visible_check": "from durations import parse_duration\nfor text in (\"2m2m\", \"1d1d\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n",
+    "visible_check": "from durations import parse_duration\nfor text in (\"2m2m\", \"1d1d\", \"6d2h2h\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n",
     "heldout_check": "from durations import parse_duration\nfor text in (\"3h3h\", \"1h5m5m\"):\n    try:\n        parse_duration(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_duration({text!r}) should raise ValueError\")\n"
   },
   {

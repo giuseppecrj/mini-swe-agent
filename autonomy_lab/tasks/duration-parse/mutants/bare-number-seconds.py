@@ -4,7 +4,7 @@ UNIT_SECONDS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
 
 
 def parse_duration(text):
-    """Return the number of seconds in a duration string such as "1h30m"."""
+    """Parse a duration string such as "4h45m"."""
     if not text.strip():
         return None
     if not re.fullmatch(r"(?:[0-9]+[dhms])+", text):

@@ -7,8 +7,9 @@ def _text(cell):
 def render_table(headers, rows):
     """Render a plain-text table of headers and rows.
 
-    Cells are strings, ints, floats or None. Columns are separated by " | ",
-    and the line after the headers uses "-+-" where the column separators are.
+    Cells are strings, ints, floats or None (never bools). When there is at
+    least one row, columns are separated by " | ", and the line after the
+    headers uses "-+-" where the column separators are.
     """
     rows = [list(row[:len(headers)]) + [None] * (len(headers) - len(row)) for row in rows]
     widths = [len(str(h)) for h in headers]

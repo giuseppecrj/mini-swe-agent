@@ -3,8 +3,15 @@
     "id": "lifetime-origin",
     "label": "arbitrary",
     "contract": "An entry's lifetime is counted from its most recent put: putting the key again restarts it, and reading the entry with get does not.",
-    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(10, 30)\ncache.put(\"a\", \"A\", 100)\nassert cache.get(\"a\", 120) == \"A\"\nassert cache.get(\"a\", 140) is None, \"reading a must not extend its lifetime\"\ncache.put(\"b\", \"B\", 100)\ncache.put(\"b\", \"B2\", 125)\nassert cache.get(\"b\", 145) == \"B2\", \"putting b again should restart its lifetime\"\n",
-    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(10, 10)\ncache.put(\"k\", \"v\", 0)\nassert cache.get(\"k\", 6) == \"v\"\nassert cache.get(\"k\", 12) is None\ncache.put(\"j\", \"w\", 0)\ncache.put(\"j\", \"w2\", 8)\nassert cache.get(\"j\", 15) == \"w2\"\n"
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(10, 30)\ncache.put(\"a\", \"A\", 100)\ncache.put(\"b\", \"B\", 100)\nassert cache.get(\"a\", 120) == \"A\"\ncache.put(\"b\", \"B2\", 125)\nassert cache.get(\"a\", 140) is None, \"reading a must not extend its lifetime\"\nassert cache.get(\"b\", 145) == \"B2\", \"putting b again should restart its lifetime\"\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(10, 10)\ncache.put(\"k\", \"v\", 0)\ncache.put(\"j\", \"w\", 0)\nassert cache.get(\"k\", 6) == \"v\"\ncache.put(\"j\", \"w2\", 8)\nassert cache.get(\"k\", 12) is None\nassert cache.get(\"j\", 15) == \"w2\"\n"
+  },
+  {
+    "id": "expiry-boundary",
+    "label": "arbitrary",
+    "contract": "An entry is no longer returned once its lifetime has fully elapsed, including at the exact moment it elapses.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(4, 10)\ncache.put(\"a\", \"A\", 0)\ncache.put(\"b\", \"B\", 3)\nassert cache.get(\"a\", 10) is None, \"a should expire exactly when its lifetime elapses\"\nassert cache.get(\"b\", 12) == \"B\"\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(5, 25)\ncache.put(\"x\", 1, 5)\ncache.put(\"y\", 2, 10)\nassert cache.get(\"x\", 30) is None\nassert cache.get(\"y\", 34) == 2\n"
   },
   {
     "id": "eviction-order",
