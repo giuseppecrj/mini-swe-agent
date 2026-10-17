@@ -24,7 +24,7 @@
     "id": "all-zero-weights",
     "label": "arbitrary",
     "contract": "If every weight is 0, split_amount raises ValueError.",
-    "visible_check": "from split import split_amount\nfor total, weights in ((100, [0, 0]), (7, [0, 0, 0])):\n    try:\n        split_amount(total, weights)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(total, weights)!r} should raise ValueError\")\n",
+    "visible_check": "from split import split_amount\nfor total, weights in ((100, [0, 0]), (7, [0, 0, 0]), (13, [0])):\n    try:\n        split_amount(total, weights)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(total, weights)!r} should raise ValueError\")\n",
     "heldout_check": "from split import split_amount\nfor total, weights in ((60, [0, 0, 0]), (5, [0])):\n    try:\n        split_amount(total, weights)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(total, weights)!r} should raise ValueError\")\n"
   },
   {

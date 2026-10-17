@@ -31,7 +31,7 @@
     "id": "blank-text",
     "label": "arbitrary",
     "contract": "An empty or whitespace-only string returns None.",
-    "visible_check": "from durations import parse_duration\nfor text in (\"\", \"   \"):\n    got = parse_duration(text)\n    assert got is None, (text, got)\n",
-    "heldout_check": "from durations import parse_duration\nfor text in (\"\", \" \\t \"):\n    got = parse_duration(text)\n    assert got is None, (text, got)\n"
+    "visible_check": "from durations import parse_duration\nfor text in (\"\", \"   \", \"\\t  \"):\n    got = parse_duration(text)\n    assert got is None, (text, got)\n",
+    "heldout_check": "from durations import parse_duration\nfor text in (\"\", \" \\t \", \"    \"):\n    got = parse_duration(text)\n    assert got is None, (text, got)\n"
   }
 ]

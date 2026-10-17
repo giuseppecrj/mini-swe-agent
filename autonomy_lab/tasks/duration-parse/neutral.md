@@ -2,7 +2,6 @@ Duration strings write lengths of time in a compact form.
 They often appear in configuration files and command-line flags.
 parse_duration reads such a string written by a person.
 Settings for many different services are written this way.
-The unit table is defined once at the top of the module.
 The function is pure and keeps no state between calls.
 It has no side effects such as logging or printing.
 Command-line tools and configuration loaders both call it.
