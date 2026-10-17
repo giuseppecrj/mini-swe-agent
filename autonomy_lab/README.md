@@ -1,0 +1,63 @@
+# Autonomy Lab — cloud experiment v0.1
+
+Test the hypothesis that deeper engineering specifications and richer *agent-visible* verification increase the reliable autonomous task horizon as breadth rises.
+
+This lab lives on an isolated branch of `giuseppecrj/mini-swe-agent`; it does not change upstream agent code. The GitHub Actions workflow provisions an **ephemeral GitHub-hosted Ubuntu runner** to execute the smoke suite. No paid VM or API key is required for the smoke run.
+
+## Design
+
+This is a small 2×2×2 factorial experiment:
+
+| Dimension | Treatment |
+| --- | --- |
+| Planning depth | Shallow issue description vs explicit invariants/contract |
+| Verification | Basic smoke checks vs richer agent-visible checks |
+| Breadth | One task vs two tasks in the same agent session |
+
+The two toy tasks are an order-preserving ID merge and an atomic ledger transfer. Both have intentionally weak starter implementations. Agents may inspect `visible_checks.py` and change only the task modules. Held-out acceptance tests are executed by the runner outside the agent's Docker mount.
+
+Each trial starts from a fresh workspace with the same initial code. Trials are not allowed to request human intervention. The current runner reports **end-to-end accepted success**, duration, exit status and timeouts, with prompt/workspace artifacts. Human interventions = 0 is a *constraint*, not a measured superiority claim.
+
+**Interpretation:** this is an instrumentation prototype, not a scientifically convincing benchmark. Task breadth is confounded with task mix in the initial 1-vs-2 comparison. Future runs should rotate task order, diversify projects, pre-score plan depth independently, randomize trial order, and repeat each cell.
+
+## Run the cloud smoke test
+
+Push to `experiment/autonomy-lab` and open the repository's **Actions → Autonomy Lab cloud smoke** run. The push-triggered job installs Python 3.11 and runs:
+
+```bash
+python -m unittest discover -s autonomy_lab/tests -v
+python -m autonomy_lab.runner --backend mock --breadths 1,2 --repetitions 1 --out autonomy_lab_results
+```
+
+It uploads `summary.csv`, `summary.json`, `trials.jsonl` and each isolated trial workspace. **Mock means no LLM executed; all mock outcomes are plumbing checks and MUST NOT be interpreted as evidence for the theory.**
+
+## Run real agent trials (Docker required)
+
+In a trusted environment with Docker, a dedicated model API credential and a cost budget:
+
+```bash
+docker build -t autonomy-lab-agent -f autonomy_lab/Dockerfile .
+export OPENAI_API_KEY=... # put in environment or cloud secret manager, never commit
+python -m autonomy_lab.runner --backend docker-mini --model openai/gpt-5 \
+  --breadths 1,2 --repetitions 5 --timeout 900 --cost-limit 1.0 \
+  --out autonomy_lab_results
+```
+
+The model ID is an example; use a model your API account can access. The Docker agent has only the trial workspace mounted, drops Linux capabilities, has resource limits, and runs with a read-only root filesystem. Acceptance code stays outside this mount. Model API keys are forwarded via environment variable; the agent can technically inspect its own runtime environment. Do not execute adversarial or third-party tasks with this credential design. A proxy with scoped credentials and enforced outbound policy is required before using untrusted issue text.
+
+The grader runs separately in a Docker container without network access. Each cell's model run is bounded by `--timeout` and mini-swe-agent's `--cost-limit`, although upstream billing and wall-clock accounting should still be monitored. GitHub-hosted runner minutes and model tokens may incur cost. **Do not treat the per-run token limit as a hard billing guarantee.**
+
+## Files
+
+- `runner.py` — fixtures, prompts, Docker execution, acceptance tests, trial metrics, CSV/JSONL outputs
+- `tests/test_runner.py` — plumbing assertions and control-condition checks
+- `Dockerfile` — reproducible mini-SWE-agent runtime without the held-out grader
+- `.github/workflows/autonomy-lab.yml` — cloud smoke pipeline
+
+## Next experiments
+
+1. Parameterize multiple independently rated real issues; rotate breadth order.
+2. Pin model, temperature, tool permissions, time budget, seed (when supported) and repo commit SHA.
+3. Add trajectory-derived agent steps, recoveries, model cost/tokens and failed verification cycles.
+4. Fit a reliability surface as a function of breadth, depth, verification and coupling with confidence intervals.
+5. Add unattended checkpoints/resumption for horizons beyond a single CI runner's lifetime.
