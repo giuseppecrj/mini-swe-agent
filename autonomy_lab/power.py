@@ -708,7 +708,10 @@ def run(
     # Refine cells near the target before any recommendation uses them (§3.2 clarifications, power targets).
     near = [i for i, (kind, _, _) in enumerate(cells) if needs_refinement(kind, results[i])]
     refine_sims = max(refine_sims, sims)
-    if near and refine_sims > 0:
+    if sims >= refine_sims and n_boot >= refine_boot:
+        for i in near:  # the first pass already ran at refinement strength
+            results[i]["refined"] = True
+    elif near and refine_sims > 0:
         refined = run_cells([cells[i] for i in near], refine_sims, refine_boot, seed, workers)
         for i, cell in zip(near, refined):
             cell["refined"] = True

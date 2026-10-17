@@ -245,13 +245,42 @@ class RefinementTests(unittest.TestCase):
         self.assertEqual(legacy["sims"], 3)
         self.assertIn("7*", power.to_markdown(result))
 
+    def test_full_strength_first_pass_is_not_rerun(self):
+        calls = []
+        real = power.run_cells
+
+        def counting(cells, sims, n_boot, seed, workers):
+            calls.append((sims, n_boot))
+            return real(cells, sims, n_boot, seed, workers)
+
+        with (
+            mock.patch.object(power, "needs_refinement", lambda kind, cell: True),
+            mock.patch.object(power, "run_cells", counting),
+        ):
+            result = power.run(
+                sims=4,
+                n_boot=100,
+                jobs=1,
+                only=("e1",),
+                e1_scenarios=power.E1_SCENARIOS[:1],
+                e1_tasks=(10,),
+                e1_trials=(8,),
+                refine_sims=4,
+                refine_boot=100,
+            )
+        self.assertEqual(calls, [(4, 100)])
+        self.assertTrue(result["e1"][0]["refined"])
+
     def test_unrefined_near_target_cell_is_not_recommended(self):
         near = fake_cell("strong", 80, 10, {"P1": 170}, sims=200, n_boot=1000, trials_per_task=8)
         clear = fake_cell("strong", 192, 12, {"P1": 990}, trials_per_task=16)
         pick = power.smallest([near, clear], "P1", 0.8, 1000, N_BOOT)
+        assert pick is not None
         self.assertEqual(pick["total_trials"], 192)
         refined = fake_cell("strong", 80, 10, {"P1": 850}, trials_per_task=8)
-        self.assertEqual(power.smallest([refined, clear], "P1", 0.8, 1000, N_BOOT)["total_trials"], 80)
+        pick = power.smallest([refined, clear], "P1", 0.8, 1000, N_BOOT)
+        assert pick is not None
+        self.assertEqual(pick["total_trials"], 80)
 
     def test_e3_is_sized_on_joint_h4_power(self):
         # Regression (T5 review, finding 7): both breadths at 85% marginal power give only ~72% joint power.
