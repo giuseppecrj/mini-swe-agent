@@ -290,14 +290,16 @@ ordered-merge passed held-out checks in 24/24 trials. Every failure is in atomic
 | input not mutated | no | yes | 0/3 | 3/3 | 6/6 |
 | invalid amounts (-2, 0, 2.0, True) raise ValueError | no | yes | 0/3 | 3/3 | 6/6 |
 | sender == recipient raises ValueError | no | no | 0/3 | 0/3 | 6/6 |
-| empty sender raises ValueError | no | no | 0/3 | 2/3 | 6/6 |
+| empty sender raises ValueError | no | no | 0/3 | 1/3 | 6/6 |
 | missing sender raises KeyError | no | no | 3/3 | 2/3 | 6/6 |
 
 Observations:
-- With the contract, ledger acceptance was 6/6 (Wilson 95% CI 0.61\u20131.00). With the brief it was 0/6 (CI 0.00\u20130.39). Fisher exact two-sided p \u2248 0.002 for this single task.
-- Rich visible checks closed exactly the requirements they encode and none beyond them. Without the contract, rich checks did not rescue acceptance.
+- With the contract, ledger acceptance was 6/6 (Wilson 95% CI 0.61–1.00). With the brief it was 0/6 (CI 0.00–0.39). Fisher exact two-sided p ≈ 0.002 for this single task.
+- Rich visible checks closed the two requirements they encode (0/3 → 3/3) and did not consistently improve the three they do not (0/3, 0/3, 3/3 → 0/3, 1/3, 2/3). Without the contract, rich checks did not rescue acceptance.
 - Shallow agents made plausible but different consequential decisions: a self-transfer as a no-op, keeping the starter's in-place mutation, ValueError for an unknown sender. None of their final messages flagged an ambiguity or stated an assumption; all reported success.
 - Breadth is confounded with task identity: breadth 2 is the only way atomic-ledger enters the design. This pilot shows no breadth effect separable from "contains the underspecified task".
-- Shallow trials took about 1.3\u20132x longer than deep at breadth 2 and still failed.
+- At breadth 2, shallow trials took 1.3× (rich) to 2.1× (basic) longer than deep ones and still failed.
 
-What this does and does not show: for one model and one underspecified task, outcome was determined by whether each consequential decision was settled in the contract or a visible check. It does not establish an effect of planning depth in general, a q-model fit, or generality across tasks or models. Held-out requirements that the brief does not mention measure missing information, which the deep condition supplies directly.
+What this does and does not show: for one model and one underspecified task, the outcome tracked whether each consequential decision was settled in the contract or a visible check. It does not establish an effect of planning depth in general, a q-model fit, or generality across tasks or models. Held-out requirements that the brief does not mention measure missing information, which the deep condition supplies directly.
+
+Correction (independent review, 2026-10-17): the empty-sender row originally said 2/3 for shallow+rich; the re-derived value is 1/3. See REPORT.md for the maintained write-up.

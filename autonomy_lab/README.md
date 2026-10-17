@@ -6,12 +6,13 @@ This lab lives on an isolated branch of `giuseppecrj/mini-swe-agent`; it does no
 
 ## Local Pi / Herdr handoff (2026-10-17)
 
-**Start here:** [SESSION_HANDOFF.md](SESSION_HANDOFF.md), then [AGENTS.md](AGENTS.md) and [STATE.json](STATE.json). These files transfer the research context and verified workflow into the user's real local agent, without inventing access to the local machine.
+**Start here:** [REPORT.md](REPORT.md) for the claim and results so far, [LOOP_SPEC.md](LOOP_SPEC.md) for the next experiments, then [SESSION_HANDOFF.md](SESSION_HANDOFF.md), [AGENTS.md](AGENTS.md) and [STATE.json](STATE.json) for provenance and operating rules.
 
-The branch now includes a **local Pi backend** (distinct from Docker mini-SWE-agent). It uses the user's own Pi model authentication, captures JSONL events and reports held-out acceptance. Start with one small authenticated trial from the repository root:
+The branch includes a **local Pi backend** (distinct from Docker mini-SWE-agent). It uses the user's own Pi model authentication, captures JSONL events and reports held-out acceptance. The model and thinking level must be pinned. A single bounded trial, from the repository root:
 
     python3 -m unittest discover -s autonomy_lab/tests -v
-    python3 -m autonomy_lab.pi_runner --breadths 1 --depths deep --verifications rich --repetitions 1 --timeout 300
+    python3 -m autonomy_lab.pi_runner --model openai-codex/gpt-5.6-sol --thinking high \
+      --breadths 1 --depths deep --verifications rich --repetitions 1 --timeout 300
 
 Or open a persistent local Pi coordinator inside Herdr from the autonomy_lab directory:
 

@@ -114,11 +114,9 @@
     }
   },
   "next_actions": [
-    "Decide the write-up framing (see coordinator notes) before adding tasks",
-    "Separate inferable from arbitrary hidden requirements, so shallow failures are not purely missing information",
-    "Decouple breadth from task identity: several tasks per difficulty, randomized task order and condition order",
-    "Measure whether agents surface ambiguity (assumption reporting) as an outcome, not only acceptance",
-    "Add a second model family before any claim about model-independent effects"
+    "User gate G1: approve LOOP_SPEC.md and open decisions D1-D6",
+    "Then harness tasks T1-T3 and T5 (per-decision grading, seeded channels, out-of-repo trial root, analysis script)",
+    "Then T4 task bank draft, cross-family audit and user label approval (gate G2) before any billed E1 trial"
   ],
   "constraints": [
     "No main-branch modifications without explicit instruction",
@@ -140,5 +138,10 @@
     "Acceptance requires every assistant message to report the requested provider/model and thinking level, with no unparseable event lines",
     "Pi event and stderr logs moved from the agent workspace to run-*/logs/<trial-id>/ (prevents accidental exposure, not deliberate access)",
     "thinking_requested and observed thinking_levels recorded per trial"
-  ]
+  ],
+  "documents": {
+    "report": "autonomy_lab/REPORT.md",
+    "loop_spec": "autonomy_lab/LOOP_SPEC.md (DRAFT; awaiting gate G1)",
+    "loop_spec_review": "3 cross-family review rounds (openai-codex/gpt-5.6-sol, high). After round 3: no high findings; 5 medium findings were fixed in text but those fixes are unreviewed, because the spec allows at most 3 rounds."
+  }
 }
