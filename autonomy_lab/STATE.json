@@ -114,9 +114,9 @@
     }
   },
   "next_actions": [
-    "User gate G1: approve LOOP_SPEC.md and open decisions D1-D6",
-    "Then harness tasks T1-T3 and T5 (per-decision grading, seeded channels, out-of-repo trial root, analysis script)",
-    "Then T4 task bank draft, cross-family audit and user label approval (gate G2) before any billed E1 trial"
+    "Harness T1-T5 per LOOP_SPEC.md section 5",
+    "User: blind label approval and 3 user-authored tasks (D3)",
+    "T8 calibration, freeze, gate G2"
   ],
   "constraints": [
     "No main-branch modifications without explicit instruction",
@@ -141,7 +141,17 @@
   ],
   "documents": {
     "report": "autonomy_lab/REPORT.md",
-    "loop_spec": "autonomy_lab/LOOP_SPEC.md (DRAFT; awaiting gate G1)",
+    "loop_spec": "autonomy_lab/LOOP_SPEC.md (G1 approved 2026-10-17, recommended D1-D7)",
     "loop_spec_review": "3 cross-family review rounds (openai-codex/gpt-5.6-sol, high). After round 3: no high findings; 5 medium findings were fixed in text but those fixes are unreviewed, because the spec allows at most 3 rounds."
+  },
+  "loop": {
+    "gate": "G1 approved",
+    "current_stage": "harness T1-T5 (parallel worktrees) -> integration -> user label approval (blind) -> T8 -> G2",
+    "budget_used": {
+      "benchmark_trials": 0,
+      "review_sessions": 0,
+      "aux_calls": 0,
+      "note": "counted from G1; 3 pre-G1 spec reviews not counted"
+    }
   }
 }

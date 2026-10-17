@@ -1,6 +1,6 @@
 # Autonomy Lab loop spec: decision coverage, channels, disclosure, breadth
 
-**Status:** DRAFT. The open decisions in §1.4 must be approved (gate G1) before any billed trial. This spec designs the loop; it does not authorize launching it.
+**Status:** G1 approved by the user on 2026-10-17, with the recommended values for D1–D7. The next gate is G2. The task schema (§4.1) and trial record (§4.3) were pinned after G1, so parallel harness work shares one contract.
 **Author:** interactive coordinator, 2026-10-17. Revised the same day after two rounds of independent cross-family review.
 **Baseline commit:** `6f2493f` on `experiment/autonomy-lab`.
 **Claim and evidence so far:** [REPORT.md](REPORT.md).
@@ -166,19 +166,41 @@ H4 is supported only if P6 is supported at both breadths. It is falsified if P6 
 ### 4.1 Task schema (new; `autonomy_lab/tasks/<task-id>/`)
 
 ```text
-task.json        id, module file, one-line brief, version, author
-starter.py       weak starting implementation
+task.json        {"id", "module": "<name>.py", "brief": str, "version": int,
+                  "author": "coordinator" | "user"}
+starter.py       weak starting implementation, copied into the workspace as <module>
 reference.py     a solution that satisfies every decision
-mutants/         one file per decision: the reference with only that decision violated
-decisions.json   list of {id, label: inferable|arbitrary|preserve,
-                 contract: str, visible_check: str, heldout_check: str}
-neutral.md       filler prose that settles no decision
+mutants/<decision-id>.py
+                 the reference with only that decision violated
+decisions.json   [{"id": str, "label": "inferable" | "arbitrary" | "preserve",
+                   "contract": str, "visible_check": str, "heldout_check": str}]
+neutral.md       filler: one neutral, accurate sentence per line that settles no decision
 ```
 
-- Each `heldout_check` is a self-contained Python snippet that tests exactly one decision and exits nonzero on failure.
+**Checks:**
+
+- Every `visible_check` and `heldout_check` is a self-contained Python snippet. It runs as its own process with the workspace as working directory, imports the module by name, and passes exactly when it exits 0.
+- Every check gets the same per-check timeout of 10 s, and runs with `python -I` plus the workspace on `sys.path`.
+
+**Mechanical bank validation** (T1 provides it; T4 must pass it):
+
+- `reference.py` passes every held-out and visible check.
+- `mutants/<d>.py` fails exactly decision `d`'s held-out check, and fails `d`'s visible check.
+- The starter fails at least half of all held-out checks, including at least 2 `arbitrary` decisions.
+- Each task has 4–8 decisions, at least 2 of them `arbitrary`.
+
+**Other rules:**
+
 - `preserve` marks behaviour the starter already has that must not break.
-- For every decision, the contract sentence and the visible check must agree.
+- For every decision, the contract sentence and the visible check must agree. The mechanical validation checks the check side; the cross-family audit checks the wording.
 - Labels are fixed at freeze time.
+- The bank hash (`task_bank_sha256`) is a SHA-256 over all files under `autonomy_lab/tasks/`, sorted by relative path, hashing each path and its content.
+
+**Prompt and check generation** (from `decisions.json`, per trial):
+
+- **Prompt:** the fixed preamble, then each task's brief, then the `contract` sentences of decisions whose channel is `contract` or `both`, in `decisions.json` order. When filler is on, whole `neutral.md` sentences come next, in file order, until the prompt is within ±5% of that task's all-contract prompt length. The preamble is the current `build_prompt` preamble without the visible-check strength sentence.
+- **Visible checks:** `visible_checks.py` contains the `visible_check` of decisions whose channel is `check` or `both`, plus one import smoke line per task.
+- **E2 `assume` arm:** appends the sentence given in §3.1.
 
 ### 4.2 Confinement profile (T3)
 
@@ -192,15 +214,29 @@ Each Pi process runs under `bwrap` with:
 
 The user's real `~/.pi/agent/sessions` is never mounted, because coordinator sessions contain the held-out checks. The agent can still read its own provider credentials. That is a known, accepted limitation for trusted tasks, as it is today.
 
-### 4.3 Runner changes
+### 4.3 Trial record schema (`trials.jsonl`, one JSON object per line)
 
-The existing `pi_runner.py` is extended, not replaced. Trial records gain:
+The existing fields from `pi_runner.py` stay, including the runtime, event and acceptance fields. New fields:
 
-- `seed`, `channels` (decision → channel), `filler`;
-- `decision_results` (decision → pass/fail);
-- `infrastructure_failure` with its classification;
-- `confinement_signals`;
-- `task_bank_sha256`.
+```text
+experiment            "E1" | "E2" | "E3" | "T7" | "T8" | "replication"
+design_id, seed       design identifier and per-trial seed (written before any trial runs)
+task_ids              ordered list of task ids in this trial (order = prompt order)
+breadth               len(task_ids)
+channels              {task_id: {decision_id: "none"|"contract"|"check"|"both"}}
+filler                bool
+arm                   null | "plain" | "assume"
+decision_results      {task_id: {decision_id: true|false}}   held-out, per decision
+labels                {task_id: {decision_id: label}}         copied from the frozen bank
+task_bank_sha256      str
+infrastructure_failure  null | "provider_error" | "retry_exhausted" | "spawn" | "auth" |
+                        "sandbox" | "no_settle" | "malformed_events" | "provider_stall"
+agent_failure         null | "timeout" | "length" | "heldout_failed"
+confinement_signals   list of {"kind", "detail"}  (empty when none)
+attempt               1 | 2   (2 = infrastructure rerun with the same seed)
+```
+
+The design for a run is also written to `design.json` in the run directory before the first trial starts.
 
 ## 5. Tasks
 
