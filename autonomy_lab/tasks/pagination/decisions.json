@@ -1,0 +1,44 @@
+[
+  {
+    "id": "returns-list",
+    "label": "preserve",
+    "contract": "get_page returns a list, whatever kind of sequence it is given.",
+    "visible_check": "from pages import get_page\nfor items, page, per_page in ((tuple(range(10)), 1, 3), (\"abcdef\", 1, 2)):\n    got = get_page(items, page, per_page)\n    assert type(got) is list and len(got) == per_page, (items, got)\n",
+    "heldout_check": "from pages import get_page\nfor items, page, per_page in ((tuple(range(20)), 2, 5), (\"uvwxyz\", 1, 2)):\n    got = get_page(items, page, per_page)\n    assert type(got) is list and len(got) == per_page, (items, got)\n"
+  },
+  {
+    "id": "past-end-is-empty",
+    "label": "preserve",
+    "contract": "Asking get_page for a page after the last one returns an empty list.",
+    "visible_check": "from pages import get_page\nassert list(get_page(list(range(8)), 5, 4)) == [], list(get_page(list(range(8)), 5, 4))\nassert list(get_page([7, 8], 6, 1)) == [], list(get_page([7, 8], 6, 1))\n",
+    "heldout_check": "from pages import get_page\nassert list(get_page(list(range(25)), 4, 10)) == []\nassert list(get_page([1, 2, 3], 9, 2)) == []\n"
+  },
+  {
+    "id": "page-numbering",
+    "label": "arbitrary",
+    "contract": "Page numbers start at 1, so page 1 holds the first per_page items, and get_page raises ValueError for a page number below 1.",
+    "visible_check": "from pages import get_page\nassert list(get_page(list(range(10)), 2, 4)) == [4, 5, 6, 7], list(get_page(list(range(10)), 2, 4))\nfor page in (0, -2):\n    try:\n        get_page(list(range(5)), page, 5)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"page {page} should raise ValueError\")\n",
+    "heldout_check": "from pages import get_page\nassert list(get_page(list(\"abcdefghi\"), 1, 3)) == [\"a\", \"b\", \"c\"]\nassert list(get_page(list(\"abcdefghi\"), 3, 3)) == [\"g\", \"h\", \"i\"]\nfor page in (0, -1):\n    try:\n        get_page([1, 2, 3], page, 2)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(page)\n"
+  },
+  {
+    "id": "count-rounds-up",
+    "label": "inferable",
+    "contract": "page_count counts a final, partly filled page as a page.",
+    "visible_check": "from pages import page_count\nassert page_count(7, 3) == 3, page_count(7, 3)\nassert page_count(9, 3) == 3, page_count(9, 3)\n",
+    "heldout_check": "from pages import page_count\nassert page_count(25, 10) == 3\nassert page_count(30, 10) == 3\nassert page_count(101, 50) == 3\n"
+  },
+  {
+    "id": "per-page-positive",
+    "label": "arbitrary",
+    "contract": "Both page_count and get_page raise ValueError when per_page is less than 1.",
+    "visible_check": "from pages import get_page, page_count\nfor call in (lambda: page_count(5, 0), lambda: page_count(8, -1), lambda: get_page([1, 2], 1, 0), lambda: get_page([1, 2], 1, -3)):\n    try:\n        call()\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"per_page below 1 should raise ValueError\")\n",
+    "heldout_check": "from pages import get_page, page_count\nfor call in (lambda: page_count(10, 0), lambda: page_count(5, -2), lambda: get_page([1, 2, 3], 1, 0), lambda: get_page([4, 5], 2, -1)):\n    try:\n        call()\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(\"accepted\")\n"
+  },
+  {
+    "id": "negative-total",
+    "label": "arbitrary",
+    "contract": "page_count raises ValueError when total is negative.",
+    "visible_check": "from pages import page_count\nfor total, per_page in ((-1, 5), (-12, 4)):\n    try:\n        page_count(total, per_page)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(total, per_page)!r} should raise ValueError\")\n",
+    "heldout_check": "from pages import page_count\nfor total, per_page in ((-3, 10), (-40, 7)):\n    try:\n        page_count(total, per_page)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(total, per_page)!r} should raise ValueError\")\n"
+  }
+]

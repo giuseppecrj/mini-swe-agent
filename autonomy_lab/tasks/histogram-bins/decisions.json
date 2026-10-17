@@ -1,0 +1,44 @@
+[
+  {
+    "id": "one-count-per-bin",
+    "label": "preserve",
+    "contract": "The result has one count for every bin, len(edges) - 1 in all, and a bin that receives no values counts 0.",
+    "visible_check": "from binning import histogram\nfor values, edges, want in (([], [0, 10, 20], [0, 0]), ([15], [0, 10, 20], [0, 1]), ([2.5, 1], [0, 3, 6, 9], [2, 0, 0])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n",
+    "heldout_check": "from binning import histogram\nfor values, edges, want in (([], [0, 1, 2, 3], [0, 0, 0]), ([7, 8], [0, 5, 10, 15], [0, 2, 0]), ([0.5], [0, 2, 4], [1, 0])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n"
+  },
+  {
+    "id": "uneven-bins",
+    "label": "inferable",
+    "contract": "Bins can have different widths, and each value is counted in the bin given by the actual edges.",
+    "visible_check": "from binning import histogram\nfor values, edges, want in (([0.5, 1.5, 4, 9], [0, 1, 2, 10], [1, 1, 2]), ([0.5, 3, 5.5, 2], [0, 1, 5, 6], [1, 2, 1])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n",
+    "heldout_check": "from binning import histogram\nfor values, edges, want in (([1, 3, 3, 50], [0, 2, 10, 100], [1, 2, 1]), ([1, 4.5, 6, 7], [0, 4, 5, 8], [1, 1, 2])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n"
+  },
+  {
+    "id": "internal-edges",
+    "label": "preserve",
+    "contract": "A value equal to an edge between two bins is counted in the bin that starts at that edge.",
+    "visible_check": "from binning import histogram\nfor values, edges, want in (([10, 5, 15], [0, 10, 20], [1, 2]), ([3, 6, 1, 4, 8], [0, 3, 6, 9], [1, 2, 2])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n",
+    "heldout_check": "from binning import histogram\nfor values, edges, want in (([5, 2, 7], [0, 5, 10], [1, 2]), ([4, 8, 1, 5, 11], [0, 4, 8, 12], [1, 2, 2])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n"
+  },
+  {
+    "id": "first-edge",
+    "label": "inferable",
+    "contract": "A value equal to the first edge is counted in the first bin.",
+    "visible_check": "from binning import histogram\nfor values, edges, want in (([0, 12, 3], [0, 10, 20], [2, 1]), ([-2.5, 0, -1], [-2.5, -0.5, 1.5], [2, 1])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n",
+    "heldout_check": "from binning import histogram\nfor values, edges, want in (([1, 2, 7], [1, 5, 9], [2, 1]), ([0.5, 0.75], [0.5, 0.7, 0.9], [1, 1])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n"
+  },
+  {
+    "id": "last-edge",
+    "label": "arbitrary",
+    "contract": "A value equal to the last edge is counted in the last bin.",
+    "visible_check": "from binning import histogram\nfor values, edges, want in (([20, 5, 11], [0, 10, 20], [1, 2]), ([4, 1.5, 3.5], [1, 2.5, 4], [1, 2])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n",
+    "heldout_check": "from binning import histogram\nfor values, edges, want in (([10, 6, 2], [0, 5, 10], [1, 2]), ([0.9, 0.1, 0.6], [0.0, 0.5, 0.9], [1, 2])):\n    got = histogram(values, edges)\n    assert got == want, (values, edges, got)\n"
+  },
+  {
+    "id": "out-of-range",
+    "label": "arbitrary",
+    "contract": "A value below the first edge or above the last edge raises ValueError.",
+    "visible_check": "from binning import histogram\nfor values, edges in (([-5], [0, 10, 20]), ([25], [0, 10, 20]), ([3, -0.5], [0, 2, 4])):\n    try:\n        histogram(values, edges)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"histogram({values!r}, {edges!r}) should raise ValueError\")\n",
+    "heldout_check": "from binning import histogram\nfor values, edges in (([-1], [0, 10]), ([10.5], [0, 5, 10]), ([1, 2, 300], [0, 4, 8])):\n    try:\n        histogram(values, edges)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"histogram({values!r}, {edges!r}) should raise ValueError\")\n"
+  }
+]

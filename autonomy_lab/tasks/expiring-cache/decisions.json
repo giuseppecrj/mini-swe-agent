@@ -1,0 +1,44 @@
+[
+  {
+    "id": "lifetime-origin",
+    "label": "arbitrary",
+    "contract": "An entry's lifetime is counted from its most recent put: putting the key again restarts it, and reading the entry with get does not.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(10, 30)\ncache.put(\"a\", \"A\", 100)\ncache.put(\"b\", \"B\", 100)\nassert cache.get(\"a\", 120) == \"A\"\ncache.put(\"b\", \"B2\", 125)\nassert cache.get(\"a\", 140) is None, \"reading a must not extend its lifetime\"\nassert cache.get(\"b\", 145) == \"B2\", \"putting b again should restart its lifetime\"\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(10, 10)\ncache.put(\"k\", \"v\", 0)\ncache.put(\"j\", \"w\", 0)\nassert cache.get(\"k\", 6) == \"v\"\ncache.put(\"j\", \"w2\", 8)\nassert cache.get(\"k\", 12) is None\nassert cache.get(\"j\", 15) == \"w2\"\n"
+  },
+  {
+    "id": "expiry-boundary",
+    "label": "arbitrary",
+    "contract": "An entry is no longer returned once its lifetime has fully elapsed, including at the exact moment it elapses.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(4, 10)\ncache.put(\"a\", \"A\", 0)\ncache.put(\"b\", \"B\", 3)\nassert cache.get(\"a\", 10) is None, \"a should expire exactly when its lifetime elapses\"\nassert cache.get(\"b\", 12) == \"B\"\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(5, 25)\ncache.put(\"x\", 1, 5)\ncache.put(\"y\", 2, 10)\nassert cache.get(\"x\", 30) is None\nassert cache.get(\"y\", 34) == 2\n"
+  },
+  {
+    "id": "eviction-order",
+    "label": "arbitrary",
+    "contract": "When a new key is put into a full cache, the entry whose most recent put is oldest is evicted, even if it was read more recently than the others.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(2, 100)\ncache.put(\"x\", \"X\", 0)\ncache.put(\"y\", \"Y\", 1)\nassert cache.get(\"x\", 2) == \"X\"\ncache.put(\"z\", \"Z\", 3)\nassert cache.get(\"x\", 4) is None, \"x should have been evicted\"\nassert cache.get(\"y\", 4) == \"Y\" and cache.get(\"z\", 4) == \"Z\"\ncache = ExpiringCache(3, 100)\ncache.put(\"p\", \"P\", 0)\ncache.put(\"q\", \"Q\", 1)\ncache.put(\"p\", \"P2\", 2)\ncache.put(\"r\", \"R\", 3)\ncache.put(\"s\", \"S\", 4)\nassert cache.get(\"q\", 5) is None, \"q should have been evicted\"\nassert cache.get(\"p\", 5) == \"P2\" and cache.get(\"r\", 5) == \"R\" and cache.get(\"s\", 5) == \"S\"\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(3, 100)\ncache.put(\"a\", \"A\", 0)\ncache.put(\"b\", \"B\", 1)\ncache.put(\"c\", \"C\", 2)\nassert cache.get(\"a\", 3) == \"A\"\ncache.put(\"d\", \"D\", 4)\nassert cache.get(\"a\", 5) is None\nassert cache.get(\"b\", 5) == \"B\" and cache.get(\"c\", 5) == \"C\" and cache.get(\"d\", 5) == \"D\"\ncache = ExpiringCache(3, 100)\ncache.put(\"a\", \"A\", 0)\ncache.put(\"b\", \"B\", 1)\ncache.put(\"a\", \"A2\", 2)\ncache.put(\"c\", \"C\", 3)\ncache.put(\"d\", \"D\", 4)\nassert cache.get(\"b\", 5) is None\nassert cache.get(\"a\", 5) == \"A2\" and cache.get(\"c\", 5) == \"C\" and cache.get(\"d\", 5) == \"D\"\n"
+  },
+  {
+    "id": "update-does-not-evict",
+    "label": "inferable",
+    "contract": "Putting a key that is already stored replaces its value and never evicts another entry.",
+    "visible_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(3, 50)\ncache.put(\"k1\", 1, 0)\ncache.put(\"k2\", 2, 0)\ncache.put(\"k3\", 3, 0)\ncache.put(\"k2\", 20, 1)\nassert cache.get(\"k1\", 2) == 1, \"k1 should still be cached\"\nassert cache.get(\"k2\", 2) == 20 and cache.get(\"k3\", 2) == 3\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\ncache = ExpiringCache(2, 10)\ncache.put(\"a\", \"A\", 0)\ncache.put(\"b\", \"B\", 1)\ncache.put(\"b\", \"B2\", 2)\nassert cache.get(\"a\", 3) == \"A\"\nassert cache.get(\"b\", 3) == \"B2\"\n"
+  },
+  {
+    "id": "capacity-at-least-one",
+    "label": "arbitrary",
+    "contract": "Creating the cache with a capacity below 1 raises ValueError.",
+    "visible_check": "from expiring_cache import ExpiringCache\nfor capacity, lifetime in ((0, 60), (-2, 60)):\n    try:\n        ExpiringCache(capacity, lifetime)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"ExpiringCache({capacity}, {lifetime}) should raise ValueError\")\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\nfor capacity, lifetime in ((0, 10), (-1, 10)):\n    try:\n        ExpiringCache(capacity, lifetime)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"ExpiringCache({capacity}, {lifetime}) should raise ValueError\")\n"
+  },
+  {
+    "id": "lifetime-positive",
+    "label": "arbitrary",
+    "contract": "Creating the cache with a lifetime of zero or less raises ValueError.",
+    "visible_check": "from expiring_cache import ExpiringCache\nfor capacity, lifetime in ((4, 0), (4, -10)):\n    try:\n        ExpiringCache(capacity, lifetime)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"ExpiringCache({capacity}, {lifetime}) should raise ValueError\")\n",
+    "heldout_check": "from expiring_cache import ExpiringCache\nfor capacity, lifetime in ((3, 0), (3, -5)):\n    try:\n        ExpiringCache(capacity, lifetime)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"ExpiringCache({capacity}, {lifetime}) should raise ValueError\")\n"
+  }
+]

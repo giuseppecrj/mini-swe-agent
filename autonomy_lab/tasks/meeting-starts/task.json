@@ -1,0 +1,7 @@
+{
+  "id": "meeting-starts",
+  "module": "slots.py",
+  "brief": "meeting_starts() suggests the wrong meeting times",
+  "version": 3,
+  "author": "coordinator"
+}

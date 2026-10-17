@@ -1,0 +1,37 @@
+[
+  {
+    "id": "avoids-busy",
+    "label": "preserve",
+    "contract": "Away from cases where a meeting would start or end exactly at a busy interval's endpoint or at day_end, the result lists, in ascending order, exactly the candidate starts whose meeting avoids every busy interval, whatever order the busy intervals are given in.",
+    "visible_check": "from slots import meeting_starts\ngot = meeting_starts([(785, 795), (705, 730)], 660, 845, 20, step=20)\nassert got == [660, 680, 740, 760, 800, 820], got\n",
+    "heldout_check": "from slots import meeting_starts\nassert meeting_starts([(605, 650)], 540, 715, 30, step=30) == [540, 570, 660]\nassert meeting_starts([(905, 925), (845, 860)], 840, 965, 30, step=30) == [870, 930]\n"
+  },
+  {
+    "id": "half-open-intervals",
+    "label": "inferable",
+    "contract": "Intervals are half-open, so a meeting may start exactly when a busy interval ends, end exactly when one starts, and end exactly at day_end.",
+    "visible_check": "from slots import meeting_starts\ngot = meeting_starts([(720, 750)], 660, 780, 30, step=30)\nassert 690 in got and 750 in got, got\ngot = meeting_starts([], 480, 540, 30, step=30)\nassert 510 in got, got\n",
+    "heldout_check": "from slots import meeting_starts\ngot = meeting_starts([(600, 630)], 540, 660, 30, step=30)\nassert 570 in got and 630 in got, got\ngot = meeting_starts([], 900, 960, 60, step=15)\nassert 900 in got, got\n"
+  },
+  {
+    "id": "invalid-busy-interval",
+    "label": "arbitrary",
+    "contract": "A busy interval whose end is not after its start raises ValueError.",
+    "visible_check": "from slots import meeting_starts\nfor busy in ([(800, 760)], [(600, 630), (1100, 1050)], [(700, 700)]):\n    try:\n        meeting_starts(busy, 540, 1020, 30)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(busy)!r} should raise ValueError\")\n",
+    "heldout_check": "from slots import meeting_starts\nfor busy in ([(650, 600)], [(540, 570), (1200, 1100)], [(615, 615)]):\n    try:\n        meeting_starts(busy, 480, 720, 30)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(busy)!r} should raise ValueError\")\n"
+  },
+  {
+    "id": "positive-length",
+    "label": "arbitrary",
+    "contract": "A meeting length of zero or less raises ValueError.",
+    "visible_check": "from slots import meeting_starts\nfor length in (0, -30):\n    try:\n        meeting_starts([], 540, 600, length)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(length)!r} should raise ValueError\")\n",
+    "heldout_check": "from slots import meeting_starts\nfor length in (0, -15):\n    try:\n        meeting_starts([(600, 630)], 540, 720, length, step=30)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(length)!r} should raise ValueError\")\n"
+  },
+  {
+    "id": "empty-day",
+    "label": "arbitrary",
+    "contract": "A working day whose day_end is not after its day_start raises ValueError.",
+    "visible_check": "from slots import meeting_starts\nfor day_start, day_end in ((600, 540), (600, 600)):\n    try:\n        meeting_starts([], day_start, day_end, 30)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(day_start, day_end)!r} should raise ValueError\")\n",
+    "heldout_check": "from slots import meeting_starts\nfor day_start, day_end in ((720, 480), (480, 480)):\n    try:\n        meeting_starts([(500, 510)], day_start, day_end, 15)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"{(day_start, day_end)!r} should raise ValueError\")\n"
+  }
+]

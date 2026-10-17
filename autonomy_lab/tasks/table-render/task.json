@@ -1,0 +1,7 @@
+{
+  "id": "table-render",
+  "module": "tables.py",
+  "brief": "render_table() output needs fixing",
+  "version": 3,
+  "author": "coordinator"
+}

@@ -1,0 +1,37 @@
+[
+  {
+    "id": "header-sets-width",
+    "label": "inferable",
+    "contract": "A column is as wide as the longer of its header and its widest cell, so a long header keeps the column separators lined up.",
+    "visible_check": "from tables import render_table\nfor headers, rows, want in (([\"product\", \"n\"], [[\"tea\", \"4\"], [\"jam\", \"9\"]], [8]), ([\"k\", \"description\", \"v\"], [[\"a\", \"short\", \"x\"]], [2, 16])):\n    got = render_table(headers, rows)\n    lines = got.split(\"\\n\")\n    seps = [[i for i, ch in enumerate(lines[1]) if ch == \"+\"]]\n    seps += [[i for i, ch in enumerate(line) if ch == \"|\"] for line in lines[:1] + lines[2:]]\n    assert all(s == want for s in seps), (headers, rows, got)\n",
+    "heldout_check": "from tables import render_table\nfor headers, rows, want in (([\"name\", \"id\"], [[\"al\", \"x1\"], [\"bo\", \"y2\"]], [5]), ([\"id\", \"status\", \"n\"], [[\"7\", \"ok\", \"z\"], [\"8\", \"up\", \"w\"]], [3, 12])):\n    got = render_table(headers, rows)\n    lines = got.split(\"\\n\")\n    seps = [[i for i, ch in enumerate(lines[1]) if ch == \"+\"]]\n    seps += [[i for i, ch in enumerate(line) if ch == \"|\"] for line in lines[:1] + lines[2:]]\n    assert all(s == want for s in seps), (headers, rows, got)\n"
+  },
+  {
+    "id": "empty-rows",
+    "label": "arbitrary",
+    "contract": "With no rows, the table is the header line followed by the separator line.",
+    "visible_check": "from tables import render_table\nfor headers in ([\"name\", \"qty\"], [\"id\"]):\n    got = render_table(headers, [])\n    lines = got.split(\"\\n\")\n    assert len(lines) == 2, repr(got)\n    assert [cell.strip() for cell in lines[0].split(\"|\")] == headers, repr(got)\n    assert set(lines[1]) <= set(\"-+\") and lines[1].count(\"+\") == len(headers) - 1, repr(got)\n",
+    "heldout_check": "from tables import render_table\nfor headers in ([\"x\", \"yy\", \"zzz\"], [\"key\"]):\n    got = render_table(headers, [])\n    lines = got.split(\"\\n\")\n    assert len(lines) == 2, repr(got)\n    assert [cell.strip() for cell in lines[0].split(\"|\")] == headers, repr(got)\n    assert set(lines[1]) <= set(\"-+\") and lines[1].count(\"+\") == len(headers) - 1, repr(got)\n"
+  },
+  {
+    "id": "numbers-right-aligned",
+    "label": "arbitrary",
+    "contract": "Cells holding int or float values are right-aligned in their column; all other cells, including strings of digits, are left-aligned.",
+    "visible_check": "from tables import render_table\ngot = render_table([\"sku\", \"qty\", \"cost\"], [[\"fig\", 3, 1.5], [\"42\", 120, 10.25]])\nassert [line.rstrip() for line in got.split(\"\\n\")] == [\n    'sku | qty | cost',\n    '----+-----+------',\n    'fig |   3 |   1.5',\n    '42  | 120 | 10.25',\n], got\n",
+    "heldout_check": "from tables import render_table\ngot = render_table([\"id\", \"n\", \"price\"], [[\"ox\", 7, 0.5], [\"9\", 42, 12.75]])\nassert [line.rstrip() for line in got.split(\"\\n\")] == [\n    'id | n  | price',\n    '---+----+------',\n    'ox |  7 |   0.5',\n    '9  | 42 | 12.75',\n], got\n"
+  },
+  {
+    "id": "none-is-blank",
+    "label": "arbitrary",
+    "contract": "A None cell is rendered as an empty cell.",
+    "visible_check": "from tables import render_table\ngot = render_table([\"key\", \"v\"], [[\"k01\", \"a\"], [None, \"b\"]])\nassert [line.rstrip() for line in got.split(\"\\n\")] == [\n    'key | v',\n    '----+--',\n    'k01 | a',\n    '    | b',\n], got\n",
+    "heldout_check": "from tables import render_table\ngot = render_table([\"a\", \"b\"], [[None, \"x\"], [\"yy\", \"z\"]])\nassert [line.rstrip() for line in got.split(\"\\n\")] == [\n    'a  | b',\n    '---+--',\n    '   | x',\n    'yy | z',\n], got\n"
+  },
+  {
+    "id": "ragged-rows",
+    "label": "arbitrary",
+    "contract": "A row with more or fewer cells than there are headers raises ValueError.",
+    "visible_check": "from tables import render_table\nfor headers, rows in (([\"a\", \"b\", \"c\"], [[\"1\", \"2\"]]), ([\"a\"], [[\"1\"], [\"2\", \"3\"]])):\n    try:\n        render_table(headers, rows)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"rows {rows!r} should raise ValueError\")\n",
+    "heldout_check": "from tables import render_table\nfor headers, rows in (([\"a\", \"b\"], [[\"1\"]]), ([\"a\"], [[\"1\", \"2\"]]), ([\"p\", \"q\"], [[\"1\", \"2\"], [\"3\", \"4\", \"5\"]])):\n    try:\n        render_table(headers, rows)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"rows {rows!r} should raise ValueError\")\n"
+  }
+]

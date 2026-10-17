@@ -1,0 +1,44 @@
+[
+  {
+    "id": "basic-pairs",
+    "label": "preserve",
+    "contract": "Each key=value item becomes one entry in the returned dict, keeping the letter case of its key and value.",
+    "visible_check": "from options import parse_options\nfor text, want in ((\"env=prod,tier=web\", {\"env\": \"prod\", \"tier\": \"web\"}), (\"Color=Red\", {\"Color\": \"Red\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from options import parse_options\nfor text, want in ((\"a=b\", {\"a\": \"b\"}), (\"Mode=Fast,Zone=EU\", {\"Mode\": \"Fast\", \"Zone\": \"EU\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n"
+  },
+  {
+    "id": "value-contains-equals",
+    "label": "inferable",
+    "contract": "Only the first = in an item separates the key from the value, so a value may itself contain =.",
+    "visible_check": "from options import parse_options\nfor text, want in ((\"url=k=v\", {\"url\": \"k=v\"}), (\"a=b,expr=x==y\", {\"a\": \"b\", \"expr\": \"x==y\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from options import parse_options\nfor text, want in ((\"token=abc==\", {\"token\": \"abc==\"}), (\"expr=x=y=z,n=m\", {\"expr\": \"x=y=z\", \"n\": \"m\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n"
+  },
+  {
+    "id": "duplicate-keys",
+    "label": "arbitrary",
+    "contract": "A key that appears in more than one item raises ValueError.",
+    "visible_check": "from options import parse_options\nfor text in (\"mode=fast,mode=slow\", \"a=x,b=y,a=z\"):\n    try:\n        parse_options(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_options({text!r}) should raise ValueError\")\n",
+    "heldout_check": "from options import parse_options\nfor text in (\"p=q,p=r\", \"x=a,y=b,y=c\"):\n    try:\n        parse_options(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_options({text!r}) should raise ValueError\")\n"
+  },
+  {
+    "id": "bare-key",
+    "label": "arbitrary",
+    "contract": "An item with no =, such as \"verbose\", sets that key to True.",
+    "visible_check": "from options import parse_options\nfor text, want in ((\"debug,level=high\", {\"debug\": True, \"level\": \"high\"}), (\"dry\", {\"dry\": True})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n    for key, value in want.items():\n        if value is True:\n            assert got[key] is True, (text, key, got[key])\n",
+    "heldout_check": "from options import parse_options\nfor text, want in ((\"a=x,quiet\", {\"a\": \"x\", \"quiet\": True}), (\"force,color=red,trace\", {\"force\": True, \"color\": \"red\", \"trace\": True})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n    for key, value in want.items():\n        if value is True:\n            assert got[key] is True, (text, key, got[key])\n"
+  },
+  {
+    "id": "empty-items",
+    "label": "arbitrary",
+    "contract": "Empty items, such as those left by a doubled, leading or trailing comma, are skipped.",
+    "visible_check": "from options import parse_options\nfor text, want in ((\"a=x,,b=y\", {\"a\": \"x\", \"b\": \"y\"}), (\"c=z,\", {\"c\": \"z\"}), (\",d=w\", {\"d\": \"w\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from options import parse_options\nfor text, want in ((\"p=q,,,r=s\", {\"p\": \"q\", \"r\": \"s\"}), (\"k=v,\", {\"k\": \"v\"}), (\",m=n\", {\"m\": \"n\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n"
+  },
+  {
+    "id": "surrounding-spaces",
+    "label": "arbitrary",
+    "contract": "Spaces around keys and values are ignored, so \"a = b\" means the same as \"a=b\".",
+    "visible_check": "from options import parse_options\nfor text, want in ((\"x = y, z=w\", {\"x\": \"y\", \"z\": \"w\"}), (\"  host=db  ,mode =fast\", {\"host\": \"db\", \"mode\": \"fast\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from options import parse_options\nfor text, want in ((\"k =v ,  m= n\", {\"k\": \"v\", \"m\": \"n\"}), (\"ab= cd ,ef  =gh\", {\"ab\": \"cd\", \"ef\": \"gh\"})):\n    got = parse_options(text)\n    assert got == want, (text, got)\n"
+  }
+]

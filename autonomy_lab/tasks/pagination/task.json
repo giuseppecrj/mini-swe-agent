@@ -1,0 +1,7 @@
+{
+  "id": "pagination",
+  "module": "pages.py",
+  "brief": "Pagination helpers in pages.py are unreliable",
+  "version": 3,
+  "author": "coordinator"
+}
