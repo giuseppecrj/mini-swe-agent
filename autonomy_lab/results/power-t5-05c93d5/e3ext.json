@@ -1,0 +1,3523 @@
+{
+  "e1": [],
+  "e1_scenarios": [
+    {
+      "decision_sd": 0.5,
+      "description": "arbitrary settled 0.95 on every channel, unsettled 0.30; inferable settled 0.95, unsettled 0.80; no channel, filler or spillover effect",
+      "expect": {
+        "P1": "supported",
+        "P2": "supported",
+        "P3": "supported",
+        "P4": "supported"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "strong",
+      "rates": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.3
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "as strong, with the first simulation's structure: 6 decisions, 2 arbitrary, 3 inferable, 1 preserve",
+      "expect": {
+        "P1": "supported",
+        "P2": "supported",
+        "P3": "supported",
+        "P4": "supported"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          2,
+          3,
+          1
+        ]
+      ],
+      "name": "strong-legacy",
+      "rates": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.3
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "arbitrary settled 0.93, unsettled 0.45 (+48 pp, close to the P1(b)/(c) thresholds)",
+      "expect": {
+        "P1": "supported"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "moderate",
+      "rates": {
+        "both": 0.93,
+        "check": 0.93,
+        "contract": 0.93,
+        "none": 0.45
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "no coverage effect: every arbitrary channel 0.85 (unsettled decisions are not arbitrary for this agent)",
+      "expect": {
+        "P1": "falsified"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "null",
+      "rates": {
+        "both": 0.85,
+        "check": 0.85,
+        "contract": 0.85,
+        "none": 0.85
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "arbitrary settled 0.70, unsettled 0.20: a large effect produced by poor execution",
+      "expect": {
+        "P1": "falsified"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "execution",
+      "rates": {
+        "both": 0.7,
+        "check": 0.7,
+        "contract": 0.7,
+        "none": 0.2
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "arbitrary contract/both 0.95, check-only 0.65, unsettled 0.30 (+30 pp contract minus check)",
+      "expect": {
+        "P2": "falsified"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "channel-gap",
+      "rates": {
+        "both": 0.95,
+        "check": 0.65,
+        "contract": 0.95,
+        "none": 0.3
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "as strong, but inferable check-only 0.65 (+30 pp contract minus check, inferable only)",
+      "expect": {
+        "P2": "falsified"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.65,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "channel-gap-inferable",
+      "rates": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.3
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "as strong, plus filler raises the unsettled arbitrary rate by 25 pp (on minus off)",
+      "expect": {
+        "P3": "falsified"
+      },
+      "filler_gap": {
+        "arbitrary": 0.25
+      },
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "filler",
+      "rates": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.3
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "as strong, plus filler raises the unsettled inferable rate by 25 pp (inferable only)",
+      "expect": {
+        "P3": "falsified"
+      },
+      "filler_gap": {
+        "inferable": 0.25
+      },
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "filler-inferable",
+      "rates": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.3
+      },
+      "spill_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "as strong, plus unsettled arbitrary rate 25 pp higher at sibling-check >= 0.6 than at <= 0.4",
+      "expect": {
+        "P4": "falsified"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "spillover",
+      "rates": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.3
+      },
+      "spill_gap": {
+        "arbitrary": 0.25
+      },
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "decision_sd": 0.5,
+      "description": "as strong, plus the same 25 pp spillover on unsettled inferable decisions only",
+      "expect": {
+        "P4": "falsified"
+      },
+      "filler_gap": {},
+      "inferable": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.8
+      },
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "spillover-inferable",
+      "rates": {
+        "both": 0.95,
+        "check": 0.95,
+        "contract": 0.95,
+        "none": 0.3
+      },
+      "spill_gap": {
+        "inferable": 0.25
+      },
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    }
+  ],
+  "e2": [],
+  "e2_scenarios": [
+    {
+      "arm_sd": 0.25,
+      "assume": 0.75,
+      "audit_fraction": 0.2,
+      "decision_sd": 0.5,
+      "description": "plain discloses 10%, assume 75%; satisfaction unchanged (arbitrary 0.30, inferable 0.80); judge 95% accurate",
+      "expect": "P5 supported",
+      "judge_accuracy": 0.95,
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "effective",
+      "plain": 0.1,
+      "satisfaction": {
+        "arbitrary": 0.3,
+        "inferable": 0.8
+      },
+      "satisfaction_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "arm_sd": 0.25,
+      "assume": 0.75,
+      "audit_fraction": 0.2,
+      "decision_sd": 0.5,
+      "description": "as effective, judge 85% accurate (judged plain rate about 0.22, audit kappa about 0.7)",
+      "expect": "P5 supported in truth; judge error biases P5(a) and lowers kappa",
+      "judge_accuracy": 0.85,
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "effective-noisy-judge",
+      "plain": 0.1,
+      "satisfaction": {
+        "arbitrary": 0.3,
+        "inferable": 0.8
+      },
+      "satisfaction_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "arm_sd": 0.25,
+      "assume": 0.45,
+      "audit_fraction": 0.2,
+      "decision_sd": 0.5,
+      "description": "plain 10%, assume 45%: the instruction helps, but less than the prediction",
+      "expect": "P5 inconclusive",
+      "judge_accuracy": 0.95,
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "weak-instruction",
+      "plain": 0.1,
+      "satisfaction": {
+        "arbitrary": 0.3,
+        "inferable": 0.8
+      },
+      "satisfaction_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "arm_sd": 0.25,
+      "assume": 0.1,
+      "audit_fraction": 0.2,
+      "decision_sd": 0.5,
+      "description": "plain and assume both disclose 10%",
+      "expect": "P5 falsified (P5(b))",
+      "judge_accuracy": 0.95,
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "no-effect",
+      "plain": 0.1,
+      "satisfaction": {
+        "arbitrary": 0.3,
+        "inferable": 0.8
+      },
+      "satisfaction_gap": {},
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "arm_sd": 0.25,
+      "assume": 0.75,
+      "audit_fraction": 0.2,
+      "decision_sd": 0.5,
+      "description": "as effective, plus assume raises arbitrary satisfaction by 20 pp",
+      "expect": "P5 falsified (P5(c))",
+      "judge_accuracy": 0.95,
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "satisfaction-shift",
+      "plain": 0.1,
+      "satisfaction": {
+        "arbitrary": 0.3,
+        "inferable": 0.8
+      },
+      "satisfaction_gap": {
+        "arbitrary": 0.2
+      },
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    },
+    {
+      "arm_sd": 0.25,
+      "assume": 0.75,
+      "audit_fraction": 0.2,
+      "decision_sd": 0.5,
+      "description": "as effective, plus assume lowers inferable satisfaction by 20 pp (inferable only)",
+      "expect": "P5 falsified (P5(c))",
+      "judge_accuracy": 0.95,
+      "mix": [
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ],
+        [
+          4,
+          2,
+          1
+        ],
+        [
+          3,
+          1,
+          1
+        ],
+        [
+          4,
+          1,
+          1
+        ]
+      ],
+      "name": "satisfaction-shift-inferable",
+      "plain": 0.1,
+      "satisfaction": {
+        "arbitrary": 0.3,
+        "inferable": 0.8
+      },
+      "satisfaction_gap": {
+        "inferable": -0.2
+      },
+      "task_sd": 0.8,
+      "trial_sd": 0.5
+    }
+  ],
+  "e3": [
+    {
+      "counts": {
+        "H4": {
+          "falsified": 37,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 23,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 15,
+          "supported": 55
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0925,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.0575,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.0375,
+          "supported": 0.1375
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.014486523910172517,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.011639775556255371,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.009499177595981664,
+          "supported": 0.01721872164244489
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 96,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 27,
+          "supported": 59
+        },
+        "P6-B2": {
+          "falsified": 26,
+          "supported": 63
+        },
+        "P6-B4": {
+          "falsified": 8,
+          "supported": 258
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0675,
+          "supported": 0.1475
+        },
+        "P6-B2": {
+          "falsified": 0.065,
+          "supported": 0.1575
+        },
+        "P6-B4": {
+          "falsified": 0.02,
+          "supported": 0.645
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.0125442965127583,
+          "supported": 0.017730182599172518
+        },
+        "P6-B2": {
+          "falsified": 0.01232629303562105,
+          "supported": 0.018213576666871338
+        },
+        "P6-B4": {
+          "falsified": 0.007,
+          "supported": 0.02392566613492715
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 432,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 33,
+          "supported": 67
+        },
+        "P6-B2": {
+          "falsified": 32,
+          "supported": 72
+        },
+        "P6-B4": {
+          "falsified": 6,
+          "supported": 250
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0825,
+          "supported": 0.1675
+        },
+        "P6-B2": {
+          "falsified": 0.08,
+          "supported": 0.18
+        },
+        "P6-B4": {
+          "falsified": 0.015,
+          "supported": 0.625
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.01375624858019075,
+          "supported": 0.018671083926756905
+        },
+        "P6-B2": {
+          "falsified": 0.013564659966250536,
+          "supported": 0.019209372712298545
+        },
+        "P6-B4": {
+          "falsified": 0.006077622890571609,
+          "supported": 0.024206145913796356
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 624,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 23,
+          "supported": 81
+        },
+        "P6-B2": {
+          "falsified": 20,
+          "supported": 85
+        },
+        "P6-B4": {
+          "falsified": 6,
+          "supported": 265
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0575,
+          "supported": 0.2025
+        },
+        "P6-B2": {
+          "falsified": 0.05,
+          "supported": 0.2125
+        },
+        "P6-B4": {
+          "falsified": 0.015,
+          "supported": 0.6625
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.011639775556255371,
+          "supported": 0.02009314248692822
+        },
+        "P6-B2": {
+          "falsified": 0.010897247358851683,
+          "supported": 0.020453835214941964
+        },
+        "P6-B4": {
+          "falsified": 0.006077622890571609,
+          "supported": 0.023642850399222173
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 816,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 30,
+          "supported": 2
+        },
+        "P6-B2": {
+          "falsified": 19,
+          "supported": 2
+        },
+        "P6-B4": {
+          "falsified": 14,
+          "supported": 133
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.075,
+          "supported": 0.005
+        },
+        "P6-B2": {
+          "falsified": 0.0475,
+          "supported": 0.005
+        },
+        "P6-B4": {
+          "falsified": 0.035,
+          "supported": 0.3325
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.013169567191065924,
+          "supported": 0.0035266839949164713
+        },
+        "P6-B2": {
+          "falsified": 0.010635289135702893,
+          "supported": 0.0035266839949164713
+        },
+        "P6-B4": {
+          "falsified": 0.009188987974744553,
+          "supported": 0.023555453190291203
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 192,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 9,
+          "supported": 259
+        },
+        "P6-B2": {
+          "falsified": 9,
+          "supported": 267
+        },
+        "P6-B4": {
+          "falsified": 2,
+          "supported": 359
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0225,
+          "supported": 0.6475
+        },
+        "P6-B2": {
+          "falsified": 0.0225,
+          "supported": 0.6675
+        },
+        "P6-B4": {
+          "falsified": 0.005,
+          "supported": 0.8975
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.007415144974981945,
+          "supported": 0.023887431318582585
+        },
+        "P6-B2": {
+          "falsified": 0.007415144974981945,
+          "supported": 0.023555453190291203
+        },
+        "P6-B4": {
+          "falsified": 0.0035266839949164713,
+          "supported": 0.015165235738358969
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 528,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 1,
+          "supported": 294
+        },
+        "P6-B2": {
+          "falsified": 1,
+          "supported": 297
+        },
+        "P6-B4": {
+          "falsified": 0,
+          "supported": 372
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0025,
+          "supported": 0.735
+        },
+        "P6-B2": {
+          "falsified": 0.0025,
+          "supported": 0.7425
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.93
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.0024968730444297725,
+          "supported": 0.02206666037260736
+        },
+        "P6-B2": {
+          "falsified": 0.0024968730444297725,
+          "supported": 0.021862853770722612
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.01275735082217307
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 720,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 7,
+          "supported": 787
+        },
+        "P6-B2": {
+          "falsified": 7,
+          "supported": 797
+        },
+        "P6-B4": {
+          "falsified": 0,
+          "supported": 957
+        }
+      },
+      "first_pass": {
+        "n_boot": 1000,
+        "rates": {
+          "H4": {
+            "falsified": 0.0075,
+            "supported": 0.7875
+          },
+          "P6-B2": {
+            "falsified": 0.0075,
+            "supported": 0.8
+          },
+          "P6-B4": {
+            "falsified": 0.0,
+            "supported": 0.9525
+          }
+        },
+        "sims": 400
+      },
+      "n_boot": 10000,
+      "rates": {
+        "H4": {
+          "falsified": 0.007,
+          "supported": 0.787
+        },
+        "P6-B2": {
+          "falsified": 0.007,
+          "supported": 0.797
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.957
+        }
+      },
+      "refined": true,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.0026364749192814255,
+          "supported": 0.012947239087929132
+        },
+        "P6-B2": {
+          "falsified": 0.0026364749192814255,
+          "supported": 0.012719709116170855
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.006414904519944161
+        }
+      },
+      "sims": 1000,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 912,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 42,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 28,
+          "supported": 1
+        },
+        "P6-B4": {
+          "falsified": 15,
+          "supported": 139
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.105,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.07,
+          "supported": 0.0025
+        },
+        "P6-B4": {
+          "falsified": 0.0375,
+          "supported": 0.3475
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.015327671055969333,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.012757350822173075,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B4": {
+          "falsified": 0.009499177595981664,
+          "supported": 0.023808808769024966
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 240,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 5,
+          "supported": 286
+        },
+        "P6-B2": {
+          "falsified": 4,
+          "supported": 292
+        },
+        "P6-B4": {
+          "falsified": 1,
+          "supported": 379
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0125,
+          "supported": 0.715
+        },
+        "P6-B2": {
+          "falsified": 0.01,
+          "supported": 0.73
+        },
+        "P6-B4": {
+          "falsified": 0.0025,
+          "supported": 0.9475
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.0055551215108222435,
+          "supported": 0.02257072218605333
+        },
+        "P6-B2": {
+          "falsified": 0.0049749371855331,
+          "supported": 0.022197972880423113
+        },
+        "P6-B4": {
+          "falsified": 0.0024968730444297725,
+          "supported": 0.01115165346484547
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 576,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 3,
+          "supported": 335
+        },
+        "P6-B2": {
+          "falsified": 3,
+          "supported": 339
+        },
+        "P6-B4": {
+          "falsified": 0,
+          "supported": 383
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0075,
+          "supported": 0.8375
+        },
+        "P6-B2": {
+          "falsified": 0.0075,
+          "supported": 0.8475
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.9575
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.00431385848168435,
+          "supported": 0.01844544320421713
+        },
+        "P6-B2": {
+          "falsified": 0.00431385848168435,
+          "supported": 0.01797524339195439
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.010086345968684594
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 768,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 2,
+          "supported": 860
+        },
+        "P6-B2": {
+          "falsified": 2,
+          "supported": 867
+        },
+        "P6-B4": {
+          "falsified": 0,
+          "supported": 970
+        }
+      },
+      "first_pass": {
+        "n_boot": 1000,
+        "rates": {
+          "H4": {
+            "falsified": 0.0025,
+            "supported": 0.835
+          },
+          "P6-B2": {
+            "falsified": 0.0025,
+            "supported": 0.845
+          },
+          "P6-B4": {
+            "falsified": 0.0,
+            "supported": 0.9575
+          }
+        },
+        "sims": 400
+      },
+      "n_boot": 10000,
+      "rates": {
+        "H4": {
+          "falsified": 0.002,
+          "supported": 0.86
+        },
+        "P6-B2": {
+          "falsified": 0.002,
+          "supported": 0.867
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.97
+        }
+      },
+      "refined": true,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.0014127986409959489,
+          "supported": 0.010972693379476163
+        },
+        "P6-B2": {
+          "falsified": 0.0014127986409959489,
+          "supported": 0.010738295954200556
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.0053944415837044735
+        }
+      },
+      "sims": 1000,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 960,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 41,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 32,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 9,
+          "supported": 182
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.1025,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.08,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.0225,
+          "supported": 0.455
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.015165235738358965,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.013564659966250536,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.007415144974981945,
+          "supported": 0.024898544134145675
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 336,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 0,
+          "supported": 358
+        },
+        "P6-B2": {
+          "falsified": 0,
+          "supported": 361
+        },
+        "P6-B4": {
+          "falsified": 0,
+          "supported": 391
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0,
+          "supported": 0.895
+        },
+        "P6-B2": {
+          "falsified": 0.0,
+          "supported": 0.9025
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.9775
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.0,
+          "supported": 0.015327671055969331
+        },
+        "P6-B2": {
+          "falsified": 0.0,
+          "supported": 0.014831870246196198
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.00741514497498194
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 672,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 0,
+          "supported": 374
+        },
+        "P6-B2": {
+          "falsified": 0,
+          "supported": 376
+        },
+        "P6-B4": {
+          "falsified": 0,
+          "supported": 397
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0,
+          "supported": 0.935
+        },
+        "P6-B2": {
+          "falsified": 0.0,
+          "supported": 0.94
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.9925
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.0,
+          "supported": 0.012326293035621046
+        },
+        "P6-B2": {
+          "falsified": 0.0,
+          "supported": 0.011874342087037922
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.004313858481684336
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 864,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 0,
+          "supported": 379
+        },
+        "P6-B2": {
+          "falsified": 0,
+          "supported": 380
+        },
+        "P6-B4": {
+          "falsified": 0,
+          "supported": 394
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.0,
+          "supported": 0.9475
+        },
+        "P6-B2": {
+          "falsified": 0.0,
+          "supported": 0.95
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.985
+        }
+      },
+      "refined": false,
+      "scenario": "independent",
+      "se": {
+        "H4": {
+          "falsified": 0.0,
+          "supported": 0.01115165346484547
+        },
+        "P6-B2": {
+          "falsified": 0.0,
+          "supported": 0.010897247358851688
+        },
+        "P6-B4": {
+          "falsified": 0.0,
+          "supported": 0.006077622890571612
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 1056,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 192,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 164,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 78,
+          "supported": 94
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.48,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.41,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.195,
+          "supported": 0.235
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.024979991993593593,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.024591665254715876,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.01981003533565753,
+          "supported": 0.021199941037653856
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 96,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 273,
+          "supported": 10
+        },
+        "P6-B2": {
+          "falsified": 273,
+          "supported": 10
+        },
+        "P6-B4": {
+          "falsified": 85,
+          "supported": 141
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.6825,
+          "supported": 0.025
+        },
+        "P6-B2": {
+          "falsified": 0.6825,
+          "supported": 0.025
+        },
+        "P6-B4": {
+          "falsified": 0.2125,
+          "supported": 0.3525
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.023275187969165792,
+          "supported": 0.007806247497997998
+        },
+        "P6-B2": {
+          "falsified": 0.023275187969165792,
+          "supported": 0.007806247497997998
+        },
+        "P6-B4": {
+          "falsified": 0.020453835214941964,
+          "supported": 0.02388743131858258
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 432,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 280,
+          "supported": 11
+        },
+        "P6-B2": {
+          "falsified": 280,
+          "supported": 11
+        },
+        "P6-B4": {
+          "falsified": 61,
+          "supported": 136
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.7,
+          "supported": 0.0275
+        },
+        "P6-B2": {
+          "falsified": 0.7,
+          "supported": 0.0275
+        },
+        "P6-B4": {
+          "falsified": 0.1525,
+          "supported": 0.34
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.022912878474779203,
+          "supported": 0.008176758220713145
+        },
+        "P6-B2": {
+          "falsified": 0.022912878474779203,
+          "supported": 0.008176758220713145
+        },
+        "P6-B4": {
+          "falsified": 0.01797524339195439,
+          "supported": 0.02368543856465402
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 624,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 255,
+          "supported": 9
+        },
+        "P6-B2": {
+          "falsified": 255,
+          "supported": 9
+        },
+        "P6-B4": {
+          "falsified": 83,
+          "supported": 151
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.6375,
+          "supported": 0.0225
+        },
+        "P6-B2": {
+          "falsified": 0.6375,
+          "supported": 0.0225
+        },
+        "P6-B4": {
+          "falsified": 0.2075,
+          "supported": 0.3775
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.024036105653786763,
+          "supported": 0.007415144974981945
+        },
+        "P6-B2": {
+          "falsified": 0.024036105653786763,
+          "supported": 0.007415144974981945
+        },
+        "P6-B4": {
+          "falsified": 0.02027583228871259,
+          "supported": 0.024238076965799084
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 816,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 242,
+          "supported": 1
+        },
+        "P6-B2": {
+          "falsified": 226,
+          "supported": 1
+        },
+        "P6-B4": {
+          "falsified": 74,
+          "supported": 106
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.605,
+          "supported": 0.0025
+        },
+        "P6-B2": {
+          "falsified": 0.565,
+          "supported": 0.0025
+        },
+        "P6-B4": {
+          "falsified": 0.185,
+          "supported": 0.265
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.024442534647617867,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B2": {
+          "falsified": 0.024787849846245234,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B4": {
+          "falsified": 0.019414878315353924,
+          "supported": 0.02206666037260736
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 192,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 305,
+          "supported": 3
+        },
+        "P6-B2": {
+          "falsified": 305,
+          "supported": 3
+        },
+        "P6-B4": {
+          "falsified": 43,
+          "supported": 180
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.7625,
+          "supported": 0.0075
+        },
+        "P6-B2": {
+          "falsified": 0.7625,
+          "supported": 0.0075
+        },
+        "P6-B4": {
+          "falsified": 0.1075,
+          "supported": 0.45
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.021277555663186502,
+          "supported": 0.00431385848168435
+        },
+        "P6-B2": {
+          "falsified": 0.021277555663186502,
+          "supported": 0.00431385848168435
+        },
+        "P6-B4": {
+          "falsified": 0.015487394067434327,
+          "supported": 0.0248746859276655
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 528,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 333,
+          "supported": 4
+        },
+        "P6-B2": {
+          "falsified": 333,
+          "supported": 4
+        },
+        "P6-B4": {
+          "falsified": 47,
+          "supported": 172
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.8325,
+          "supported": 0.01
+        },
+        "P6-B2": {
+          "falsified": 0.8325,
+          "supported": 0.01
+        },
+        "P6-B4": {
+          "falsified": 0.1175,
+          "supported": 0.43
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.018671083926756902,
+          "supported": 0.0049749371855331
+        },
+        "P6-B2": {
+          "falsified": 0.018671083926756902,
+          "supported": 0.0049749371855331
+        },
+        "P6-B4": {
+          "falsified": 0.01610075696978251,
+          "supported": 0.024753787588973127
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 720,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 332,
+          "supported": 3
+        },
+        "P6-B2": {
+          "falsified": 332,
+          "supported": 3
+        },
+        "P6-B4": {
+          "falsified": 55,
+          "supported": 174
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.83,
+          "supported": 0.0075
+        },
+        "P6-B2": {
+          "falsified": 0.83,
+          "supported": 0.0075
+        },
+        "P6-B4": {
+          "falsified": 0.1375,
+          "supported": 0.435
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.018781639970992952,
+          "supported": 0.00431385848168435
+        },
+        "P6-B2": {
+          "falsified": 0.018781639970992952,
+          "supported": 0.00431385848168435
+        },
+        "P6-B4": {
+          "falsified": 0.01721872164244489,
+          "supported": 0.024787849846245234
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 912,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 247,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 233,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 70,
+          "supported": 142
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.6175,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.5825,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.175,
+          "supported": 0.355
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.02429988425898362,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.024657339171127123,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.01899835519196333,
+          "supported": 0.02392566613492715
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 240,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 326,
+          "supported": 3
+        },
+        "P6-B2": {
+          "falsified": 326,
+          "supported": 3
+        },
+        "P6-B4": {
+          "falsified": 46,
+          "supported": 187
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.815,
+          "supported": 0.0075
+        },
+        "P6-B2": {
+          "falsified": 0.815,
+          "supported": 0.0075
+        },
+        "P6-B4": {
+          "falsified": 0.115,
+          "supported": 0.4675
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.019414878315353924,
+          "supported": 0.00431385848168435
+        },
+        "P6-B2": {
+          "falsified": 0.019414878315353924,
+          "supported": 0.00431385848168435
+        },
+        "P6-B4": {
+          "falsified": 0.01595109714094927,
+          "supported": 0.024947131598642758
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 576,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 331,
+          "supported": 1
+        },
+        "P6-B2": {
+          "falsified": 331,
+          "supported": 1
+        },
+        "P6-B4": {
+          "falsified": 49,
+          "supported": 182
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.8275,
+          "supported": 0.0025
+        },
+        "P6-B2": {
+          "falsified": 0.8275,
+          "supported": 0.0025
+        },
+        "P6-B4": {
+          "falsified": 0.1225,
+          "supported": 0.455
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.018890721929031722,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B2": {
+          "falsified": 0.018890721929031722,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B4": {
+          "falsified": 0.016393119745795794,
+          "supported": 0.024898544134145675
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 768,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 339,
+          "supported": 1
+        },
+        "P6-B2": {
+          "falsified": 339,
+          "supported": 1
+        },
+        "P6-B4": {
+          "falsified": 51,
+          "supported": 202
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.8475,
+          "supported": 0.0025
+        },
+        "P6-B2": {
+          "falsified": 0.8475,
+          "supported": 0.0025
+        },
+        "P6-B4": {
+          "falsified": 0.1275,
+          "supported": 0.505
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.01797524339195439,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B2": {
+          "falsified": 0.01797524339195439,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B4": {
+          "falsified": 0.016676611616272652,
+          "supported": 0.02499874996874844
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 960,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 270,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 256,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 62,
+          "supported": 160
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.675,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.64,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.155,
+          "supported": 0.4
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.023418742493993994,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.024,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.01809523417919757,
+          "supported": 0.02449489742783178
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 336,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 347,
+          "supported": 2
+        },
+        "P6-B2": {
+          "falsified": 347,
+          "supported": 2
+        },
+        "P6-B4": {
+          "falsified": 46,
+          "supported": 218
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.8675,
+          "supported": 0.005
+        },
+        "P6-B2": {
+          "falsified": 0.8675,
+          "supported": 0.005
+        },
+        "P6-B4": {
+          "falsified": 0.115,
+          "supported": 0.545
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.016951677645590125,
+          "supported": 0.0035266839949164713
+        },
+        "P6-B2": {
+          "falsified": 0.016951677645590125,
+          "supported": 0.0035266839949164713
+        },
+        "P6-B4": {
+          "falsified": 0.01595109714094927,
+          "supported": 0.024898544134145675
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 672,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 347,
+          "supported": 1
+        },
+        "P6-B2": {
+          "falsified": 347,
+          "supported": 1
+        },
+        "P6-B4": {
+          "falsified": 38,
+          "supported": 208
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.8675,
+          "supported": 0.0025
+        },
+        "P6-B2": {
+          "falsified": 0.8675,
+          "supported": 0.0025
+        },
+        "P6-B4": {
+          "falsified": 0.095,
+          "supported": 0.52
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.016951677645590125,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B2": {
+          "falsified": 0.016951677645590125,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B4": {
+          "falsified": 0.01466074691139575,
+          "supported": 0.024979991993593593
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 864,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 346,
+          "supported": 3
+        },
+        "P6-B2": {
+          "falsified": 346,
+          "supported": 3
+        },
+        "P6-B4": {
+          "falsified": 44,
+          "supported": 210
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.865,
+          "supported": 0.0075
+        },
+        "P6-B2": {
+          "falsified": 0.865,
+          "supported": 0.0075
+        },
+        "P6-B4": {
+          "falsified": 0.11,
+          "supported": 0.525
+        }
+      },
+      "refined": false,
+      "scenario": "interference",
+      "se": {
+        "H4": {
+          "falsified": 0.017086178624841776,
+          "supported": 0.00431385848168435
+        },
+        "P6-B2": {
+          "falsified": 0.017086178624841776,
+          "supported": 0.00431385848168435
+        },
+        "P6-B4": {
+          "falsified": 0.015644487847162016,
+          "supported": 0.02496873044429772
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 1056,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 194,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 39,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 183,
+          "supported": 3
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.485,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.0975,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.4575,
+          "supported": 0.0075
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.024988747467610296,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.014831870246196196,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.024909523781076182,
+          "supported": 0.00431385848168435
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 96,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 311,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 115,
+          "supported": 9
+        },
+        "P6-B4": {
+          "falsified": 311,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.7775,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.2875,
+          "supported": 0.0225
+        },
+        "P6-B4": {
+          "falsified": 0.7775,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.020796258677944938,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.022629833737789592,
+          "supported": 0.007415144974981945
+        },
+        "P6-B4": {
+          "falsified": 0.020796258677944938,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 432,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 337,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 130,
+          "supported": 16
+        },
+        "P6-B4": {
+          "falsified": 337,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.8425,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.325,
+          "supported": 0.04
+        },
+        "P6-B4": {
+          "falsified": 0.8425,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.018213576666871335,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.023418742493993994,
+          "supported": 0.009797958971132711
+        },
+        "P6-B4": {
+          "falsified": 0.018213576666871335,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 624,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 332,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 127,
+          "supported": 13
+        },
+        "P6-B4": {
+          "falsified": 332,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.83,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.3175,
+          "supported": 0.0325
+        },
+        "P6-B4": {
+          "falsified": 0.83,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.018781639970992952,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.023275187969165792,
+          "supported": 0.008866192813152667
+        },
+        "P6-B4": {
+          "falsified": 0.018781639970992952,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 4,
+      "tasks": 12,
+      "total_trials": 816,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 253,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 59,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 233,
+          "supported": 1
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.6325,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.1475,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.5825,
+          "supported": 0.0025
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.024106210299422844,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.017730182599172518,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.024657339171127123,
+          "supported": 0.0024968730444297725
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 192,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 378,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 108,
+          "supported": 58
+        },
+        "P6-B4": {
+          "falsified": 377,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.945,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.27,
+          "supported": 0.145
+        },
+        "P6-B4": {
+          "falsified": 0.9425,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.011399013115178002,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.022197972880423113,
+          "supported": 0.017605041891458253
+        },
+        "P6-B4": {
+          "falsified": 0.01163977555625537,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 528,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 378,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 84,
+          "supported": 59
+        },
+        "P6-B4": {
+          "falsified": 378,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.945,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.21,
+          "supported": 0.1475
+        },
+        "P6-B4": {
+          "falsified": 0.945,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.011399013115178002,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.0203654118544163,
+          "supported": 0.017730182599172518
+        },
+        "P6-B4": {
+          "falsified": 0.011399013115178002,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 720,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 371,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 78,
+          "supported": 93
+        },
+        "P6-B4": {
+          "falsified": 371,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.9275,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.195,
+          "supported": 0.2325
+        },
+        "P6-B4": {
+          "falsified": 0.9275,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.012965699942540704,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.01981003533565753,
+          "supported": 0.02112130145137842
+        },
+        "P6-B4": {
+          "falsified": 0.012965699942540704,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 12,
+      "tasks": 12,
+      "total_trials": 912,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 252,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 58,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 231,
+          "supported": 4
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.63,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.145,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.5775,
+          "supported": 0.01
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.024140215409146622,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.017605041891458253,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.02469786174955233,
+          "supported": 0.0049749371855331
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 240,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 371,
+          "supported": 1
+        },
+        "P6-B2": {
+          "falsified": 109,
+          "supported": 77
+        },
+        "P6-B4": {
+          "falsified": 371,
+          "supported": 1
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.9275,
+          "supported": 0.0025
+        },
+        "P6-B2": {
+          "falsified": 0.2725,
+          "supported": 0.1925
+        },
+        "P6-B4": {
+          "falsified": 0.9275,
+          "supported": 0.0025
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.012965699942540704,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B2": {
+          "falsified": 0.02226228593383887,
+          "supported": 0.019713177699194007
+        },
+        "P6-B4": {
+          "falsified": 0.012965699942540704,
+          "supported": 0.0024968730444297725
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 576,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 378,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 71,
+          "supported": 95
+        },
+        "P6-B4": {
+          "falsified": 378,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.945,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.1775,
+          "supported": 0.2375
+        },
+        "P6-B4": {
+          "falsified": 0.945,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.011399013115178002,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.019104564245226847,
+          "supported": 0.0212775556631865
+        },
+        "P6-B4": {
+          "falsified": 0.011399013115178002,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 768,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 375,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 69,
+          "supported": 102
+        },
+        "P6-B4": {
+          "falsified": 375,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.9375,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.1725,
+          "supported": 0.255
+        },
+        "P6-B4": {
+          "falsified": 0.9375,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.012103072956898178,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.018890721929031722,
+          "supported": 0.02179306082219751
+        },
+        "P6-B4": {
+          "falsified": 0.012103072956898178,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 16,
+      "tasks": 12,
+      "total_trials": 960,
+      "trials_per_breadth": 384
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 268,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 70,
+          "supported": 0
+        },
+        "P6-B4": {
+          "falsified": 248,
+          "supported": 4
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.67,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.175,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.62,
+          "supported": 0.01
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.023510635891017494,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.01899835519196333,
+          "supported": 0.0
+        },
+        "P6-B4": {
+          "falsified": 0.024269322199023193,
+          "supported": 0.0049749371855331
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 336,
+      "trials_per_breadth": 24
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 376,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 84,
+          "supported": 76
+        },
+        "P6-B4": {
+          "falsified": 375,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.94,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.21,
+          "supported": 0.19
+        },
+        "P6-B4": {
+          "falsified": 0.9375,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.011874342087037922,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.0203654118544163,
+          "supported": 0.019615045245933032
+        },
+        "P6-B4": {
+          "falsified": 0.012103072956898178,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 672,
+      "trials_per_breadth": 192
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 383,
+          "supported": 1
+        },
+        "P6-B2": {
+          "falsified": 70,
+          "supported": 100
+        },
+        "P6-B4": {
+          "falsified": 383,
+          "supported": 1
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.9575,
+          "supported": 0.0025
+        },
+        "P6-B2": {
+          "falsified": 0.175,
+          "supported": 0.25
+        },
+        "P6-B4": {
+          "falsified": 0.9575,
+          "supported": 0.0025
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.010086345968684594,
+          "supported": 0.0024968730444297725
+        },
+        "P6-B2": {
+          "falsified": 0.01899835519196333,
+          "supported": 0.021650635094610966
+        },
+        "P6-B4": {
+          "falsified": 0.010086345968684594,
+          "supported": 0.0024968730444297725
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 864,
+      "trials_per_breadth": 288
+    },
+    {
+      "counts": {
+        "H4": {
+          "falsified": 388,
+          "supported": 0
+        },
+        "P6-B2": {
+          "falsified": 59,
+          "supported": 105
+        },
+        "P6-B4": {
+          "falsified": 388,
+          "supported": 0
+        }
+      },
+      "n_boot": 1000,
+      "rates": {
+        "H4": {
+          "falsified": 0.97,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.1475,
+          "supported": 0.2625
+        },
+        "P6-B4": {
+          "falsified": 0.97,
+          "supported": 0.0
+        }
+      },
+      "refined": false,
+      "scenario": "shared-trial",
+      "se": {
+        "H4": {
+          "falsified": 0.008529361054615993,
+          "supported": 0.0
+        },
+        "P6-B2": {
+          "falsified": 0.017730182599172518,
+          "supported": 0.02199964488349755
+        },
+        "P6-B4": {
+          "falsified": 0.008529361054615993,
+          "supported": 0.0
+        }
+      },
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 1056,
+      "trials_per_breadth": 384
+    }
+  ],
+  "e3_scenarios": [
+    {
+      "description": "tasks fail independently: observed equals the product in expectation",
+      "expect": "P6 supported at B=2 and B=4 (H4 supported)",
+      "mean_rate": 0.6,
+      "multi_rate": null,
+      "name": "independent",
+      "task_sd": 0.6,
+      "trial_sd": 0.0,
+      "true_gap": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "description": "per-task success drops from 0.60 to 0.40 inside multi-task sessions",
+      "expect": "P6 falsified at B=2; the B=4 gap is inside the margin, because products near 0.13 cannot fall 15 pp",
+      "mean_rate": 0.6,
+      "multi_rate": 0.4,
+      "name": "interference",
+      "task_sd": 0.6,
+      "trial_sd": 0.0,
+      "true_gap": [
+        -0.2001219823441729,
+        -0.1039163411497339
+      ]
+    },
+    {
+      "description": "a shared per-trial logit effect (SD 2.5) makes successes positively dependent",
+      "expect": "P6 falsified at B=4; the B=2 gap is inside the margin",
+      "mean_rate": 0.6,
+      "multi_rate": null,
+      "name": "shared-trial",
+      "task_sd": 0.6,
+      "trial_sd": 2.5,
+      "true_gap": [
+        0.10776907625701738,
+        0.21866275602663204
+      ]
+    }
+  ],
+  "elapsed_seconds": 1105.5,
+  "n_boot": 1000,
+  "recommendation": {
+    "e1": null,
+    "e1_p2_p3_p4": {
+      "P2": null,
+      "P3": null,
+      "P4": null
+    },
+    "e1_planned_power": null,
+    "e2": null,
+    "e2_planned_power": null,
+    "e3_any": {
+      "n_boot": 1000,
+      "power": 0.895,
+      "se": 0.015327671055969331,
+      "sims": 400,
+      "single_per_task": 24,
+      "tasks": 12,
+      "total_trials": 672,
+      "trials_per_breadth": 192
+    },
+    "e3_best_within_budget": null,
+    "e3_within_budget": null,
+    "target_power": 0.8
+  },
+  "refine_boot": 10000,
+  "refine_sims": 1000,
+  "seed": 0,
+  "sims": 400,
+  "target_power": 0.8
+}
