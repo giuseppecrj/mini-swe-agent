@@ -229,7 +229,8 @@ Each Pi process runs under `bwrap` with:
 - `$HOME`, the repository, and every results directory except the trial's own workspace replaced by empty tmpfs mounts;
 - the trial workspace bound read-write at a neutral path;
 - the Pi installation bound read-only;
-- `PI_CODING_AGENT_DIR` pointing to a minimal agent directory holding only the files Pi needs to authenticate, chosen so OAuth token refresh still writes back correctly.
+- `PI_CODING_AGENT_DIR` pointing to a minimal agent directory holding only `auth.json`, bound **read-only**. Before each trial the runner calls `prepare_host_auth` on the host, which refreshes the token if it expires within the trial timeout plus a margin. A refresh attempted inside the sandbox therefore fails and is classified as an infrastructure `auth` failure; it can never modify the host file.
+- a seccomp filter blocking `socket(AF_UNIX)` and io_uring, so host abstract Unix sockets are unreachable despite the shared network. A shim closes every inherited file descriptor before bubblewrap starts.
 
 The user's real `~/.pi/agent/sessions` is never mounted, because coordinator sessions contain the held-out checks. The agent can still read its own provider credentials. That is a known, accepted limitation for trusted tasks, as it is today.
 
