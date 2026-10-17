@@ -3,12 +3,19 @@
 Usage: python3 -m autonomy_lab.analysis <run_dir> [--seed N] [--kappa K] [--tasks-dir DIR]
        [--confinement-review PATH]
 
-Reads <run_dir>/trials.jsonl, writes <run_dir>/analysis.json and <run_dir>/analysis.md, and prints the
-Markdown. Standard library only. Every bootstrap is deterministic given --seed.
+Reads <run_dir>/trials.jsonl and the pre-run design <run_dir>/design.json, writes <run_dir>/analysis.json
+and <run_dir>/analysis.md, and prints the Markdown. Standard library only. Every bootstrap is deterministic
+given --seed.
 
 Interpretation choices (the spec, including its "Pre-registration clarifications", is authoritative; these
 resolve what it leaves open, conservatively):
 
+- Populations come from the pre-run design (§2.3 "Recording"): design.json is one design object, as the runner
+  writes it, or a list of them, one per experiment. The tasks, decisions and E2 arms an analysis must account
+  for are those the design plans, not those that happen to have counted observations, so a task or decision
+  whose trials are all excluded still counts (against support) as described below. Decision labels come from
+  any record of the run, excluded attempts included, then from the bank's decisions.json (--tasks-dir); a
+  decision whose label is still unknown counts wherever its stratum could matter.
 - Counted trials: records are grouped by (experiment, design_id, seed) and only the highest `attempt` is
   used. A final attempt that is still an infrastructure failure is excluded and reported as unresolved.
 - Validity gates (§2.4). If any gate fails, the run is `invalid`: every prediction and component verdict
@@ -25,7 +32,10 @@ resolve what it leaves open, conservatively):
     Signals that the review does not cover yet leave the run `pending_review`: verdicts are withheld
     (reported as `pending_review`) until the review covers every signal;
   - tampering: every record has `spec_files_intact` exactly true (prompt.txt and visible checks
-    unchanged); a missing field counts as tampering not ruled out.
+    unchanged); any other value (missing, null, 0, "", "false", ...) counts as tampering not ruled out;
+  - design: design.json is present, and every record is a planned trial of it (same experiment, design_id
+    and seed, and, where recorded, the same trial_id and bank hash) with the planned tasks, channels,
+    filler and arm. Without the design the populations below cannot be established.
 - A decision missing from `decision_results` in a counted trial is scored as not satisfied (agent
   failures count against the condition) and counted under `missing_results`.
 - "Settled" means channel `contract`, `check` or `both`; "unsettled" means `none`.
@@ -36,21 +46,25 @@ resolve what it leaves open, conservatively):
 - P1(a): the per-task effect is the task's pooled settled rate minus its pooled unsettled rate over
   arbitrary decision observations. The sign test is an exact binomial (p = 1/2) over all E1 tasks; a task
   whose effect is exactly 0, or cannot be computed, is a tie and counts against whichever direction is
-  tested. Supported needs median >= +0.30 and P(X >= positives) < 0.025; falsified needs
-  P(X >= negatives) < 0.025, X ~ Binomial(all tasks, 1/2).
+  tested. "All E1 tasks" are the tasks the design plans, so a task whose trials were all excluded is a tie.
+  Supported needs median >= +0.30 and P(X >= positives) < 0.025; falsified needs P(X >= negatives) < 0.025,
+  X ~ Binomial(all tasks, 1/2).
 - P2 and P3 are the mean across tasks of per-task differences (contract-only minus check-only; filler on
   minus off among unsettled decisions). P4 is computed per decision (rate at sibling-check fraction
   >= 0.6 minus rate at <= 0.4 among its `none` cells), averaged per task, then averaged across tasks.
-  The sibling-check fraction uses every other decision in the trial. A decision of either stratum whose
-  counted `none` cells lack either exposure side is unidentified; it is counted and reported, and if any
-  exists P4 cannot be supported (only falsified or inconclusive).
+  The sibling-check fraction uses every other decision in the trial. A planned decision of either stratum
+  (or of unknown label) whose counted `none` cells lack either exposure side, including one with no counted
+  cell at all, is unidentified; it is counted and reported, and if any exists P4 cannot be supported (only
+  falsified or inconclusive).
 - P5 uses E2 records. Disclosure is read from an optional per-decision map in each record,
-  `disclosed: {task_id: {decision_id: true|false}}`, written by the T6 judge. P5(a)/(b) are means across
+  `disclosed: {task_id: {decision_id: true|false}}`, written by the T6 judge; any value other than a JSON
+  boolean counts as unjudged. P5(a)/(b) are means across
   tasks of per-task disclosure rates over unsettled arbitrary decisions; P5(c) is the mean across tasks
   of per-task satisfaction differences (assume minus plain), per stratum. The audit's Cohen's kappa
   comes from --kappa or <run_dir>/disclosure_audit.json (`{"kappa": float}`). P5 is inconclusive,
   whatever its components say, if any eligible (unsettled arbitrary) decision is unjudged, or kappa is
-  missing, not a finite number in [-1, 1], or below 0.6.
+  missing, not a finite number in [-1, 1], or below 0.6. A planned (task, unsettled arbitrary or
+  unknown-label decision, arm) cell of the E2 design with no counted observation is unjudged too.
 - P6 uses E3 records. A task succeeds in a trial when all its decisions are satisfied; a trial succeeds
   when all its tasks do. B>1 trials containing a task with no B=1 data are excluded and counted.
 - Every CI is a percentile bootstrap. Task-clustered components resample tasks with replacement; P6
@@ -69,7 +83,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 N_BOOT = 10_000
 SETTLED = ("contract", "check", "both")
 CHANNELS = ("none", "contract", "check", "both")
@@ -109,10 +123,56 @@ def trial_key(record):
     return (record.get("experiment"), record.get("design_id"), record.get("seed"))
 
 
-def select_counted(records, confinement_review=None):
+def normalize_designs(design):
+    """{experiment: design} from one design object or a list of them, one per experiment; None if absent."""
+    if design is None:
+        return None
+    out = {}
+    for item in design if isinstance(design, list) else [design]:
+        if not isinstance(item, dict) or not isinstance(item.get("trials"), list):
+            raise ValueError("design: expected an object with a `trials` list, or a list of such objects")
+        if "experiment" not in item or "design_id" not in item:
+            raise ValueError("design: every design needs `experiment` and `design_id`")
+        if item["experiment"] in out:
+            raise ValueError(f"design: more than one design for experiment {item['experiment']!r}")
+        for trial in item["trials"]:
+            if (
+                not isinstance(trial, dict)
+                or "seed" not in trial
+                or not isinstance(trial.get("task_ids"), list)
+                or not isinstance(trial.get("channels"), dict)
+            ):
+                raise ValueError(f"design {item['design_id']}: every trial needs seed, task_ids and channels")
+        out[item["experiment"]] = item
+    return out
+
+
+ASSIGNMENT_FIELDS = ("task_ids", "channels", "filler", "arm")
+
+
+def off_design(records, designs):
+    """Number of records that are not a planned trial of the design, or whose assignment differs from it."""
+    planned = {(exp, d["design_id"], t["seed"]): (d, t) for exp, d in designs.items() for t in d["trials"]}
+    count = 0
+    for record in records:
+        hit = planned.get(trial_key(record))
+        if hit is None:
+            count += 1
+            continue
+        design, trial = hit
+        expected = {"trial_id": trial.get("trial_id"), "task_bank_sha256": design.get("task_bank_sha256")}
+        if any(record.get(f) != trial.get(f) for f in ASSIGNMENT_FIELDS) or any(
+            record.get(f) is not None and v is not None and record[f] != v for f, v in expected.items()
+        ):
+            count += 1
+    return count
+
+
+def select_counted(records, confinement_review=None, designs=None):
     """Return (counted records, infrastructure summary). Uses the final attempt per trial seed.
 
-    The summary's `validity` holds the §2.4 gates; see the module docstring for the frozen definitions."""
+    designs is normalize_designs(design.json), None when no design was recorded. The summary's `validity`
+    holds the §2.4 gates; see the module docstring for the frozen definitions."""
     groups = {}
     for record in records:
         groups.setdefault(trial_key(record), []).append(record)
@@ -144,7 +204,9 @@ def select_counted(records, confinement_review=None):
     runtime_unknown = sum(1 for r in counted if "runtime_matches_request" not in r)
     runtime_not_true = sum(1 for r in counted if r.get("runtime_matches_request") is not True)
     tampered = sum(1 for r in records if r.get("spec_files_intact") is False)
-    integrity_unknown = sum(1 for r in records if "spec_files_intact" not in r)
+    # Only literal true clears a record: null, 0, "", "false" and a missing field all leave tampering open.
+    integrity_unknown = sum(1 for r in records if r.get("spec_files_intact") is not True) - tampered
+    off = off_design(records, designs) if designs is not None else None
     signal_list = [s for r in records for s in (r.get("confinement_signals") or [])]
     signals = len(signal_list)
     recorded_violations = sum(1 for s in signal_list if isinstance(s, dict) and s.get("confirmed") is True)
@@ -170,16 +232,18 @@ def select_counted(records, confinement_review=None):
         "spec_files_integrity_unknown": integrity_unknown,
         "confinement_signals": signals,
         "confinement_violations_recorded": recorded_violations,
+        "design_recorded": designs is not None,
+        "records_off_design": off,
     }
     summary["validity"] = assess_validity(
-        rate, runtime_not_true, tampered + integrity_unknown, signals, recorded_violations, confinement_review
+        rate, runtime_not_true, tampered + integrity_unknown, signals, recorded_violations, confinement_review, off
     )
     return counted, summary
 
 
-def assess_validity(rate, runtime_not_true, tamper_failures, signals, recorded_violations, review):
+def assess_validity(rate, runtime_not_true, tamper_failures, signals, recorded_violations, review, off_design=0):
     """§2.4 gates and the run status: `invalid` if any gate fails, else `pending_review` while confinement
-    signals remain unreviewed, else `valid`."""
+    signals remain unreviewed, else `valid`. off_design is None when no design was recorded."""
     review = review or {}
     reviewed = review.get("signals_reviewed", 0)
     confirmed = review.get("confirmed_violations", 0)
@@ -191,6 +255,8 @@ def assess_validity(rate, runtime_not_true, tamper_failures, signals, recorded_v
         "infrastructure_rate_at_most_5pct": _r(rate) <= INFRA_GATE,
         "no_confirmed_confinement_violation": recorded_violations == 0 and confirmed == 0,
         "spec_files_intact": tamper_failures == 0,
+        "design_recorded": off_design is not None,
+        "records_match_design": off_design == 0,
     }
     failed = []
     if not gates["runtime_matches_request"]:
@@ -200,7 +266,21 @@ def assess_validity(rate, runtime_not_true, tamper_failures, signals, recorded_v
     if not gates["no_confirmed_confinement_violation"]:
         failed.append(f"confirmed confinement violation(s): {recorded_violations} recorded, {confirmed} from review")
     if not gates["spec_files_intact"]:
-        failed.append(f"{tamper_failures} record(s) with prompt.txt or visible checks changed, or integrity unknown")
+        failed.append(
+            f"{tamper_failures} record(s) with prompt.txt or visible checks changed, or integrity unknown "
+            "(spec_files_intact not exactly true)"
+        )
+    if off_design is None:
+        failed.append(
+            "design.json missing: without the pre-run design the task and decision populations cannot be "
+            "established, so a task or decision whose trials were all excluded would drop out of P1, P4 and P5 "
+            "unseen (§2.3, §3.2)"
+        )
+    elif off_design:
+        failed.append(
+            f"{off_design} record(s) not a planned trial of design.json (experiment, design_id, seed, trial_id, "
+            "bank hash, tasks, channels, filler or arm differ)"
+        )
     unreviewed = max(0, signals - reviewed)
     if failed:
         status = "invalid"
@@ -245,7 +325,8 @@ def observations(records, experiment):
         labels = record.get("labels") or {}
         channels = record.get("channels") or {}
         results = record.get("decision_results") or {}
-        disclosed = record.get("disclosed") or {}
+        disclosed = record.get("disclosed")
+        disclosed = disclosed if isinstance(disclosed, dict) else {}
         cells = []
         for task in record["task_ids"]:
             if task not in labels:
@@ -261,6 +342,8 @@ def observations(records, experiment):
             value = (results.get(task) or {}).get(decision)
             if value is None:
                 missing += 1
+            judged = disclosed.get(task)
+            judged = judged.get(decision) if isinstance(judged, dict) else None
             own = 1 if channel in ("check", "both") else 0
             sib = (checks - own) / others if others else 0.0
             out.append(
@@ -274,10 +357,59 @@ def observations(records, experiment):
                     sib=sib,
                     result=value is True,
                     arm=record.get("arm"),
-                    disclosed=(disclosed.get(task) or {}).get(decision),
+                    # Only a JSON boolean is a judgement; anything else ("true", 1, null) is unjudged.
+                    disclosed=judged if isinstance(judged, bool) else None,
                 )
             )
     return out, missing
+
+
+# ---------------------------------------------------------------- planned populations (design.json)
+
+
+@dataclass(frozen=True, slots=True)
+class Planned:
+    """The population an experiment's design plans: tasks, decisions with labels, and E2 cells."""
+
+    tasks: tuple  # task ids
+    decisions: dict  # {(task, decision): label, or None when unknown}
+    unsettled_arms: frozenset  # {(task, decision, arm)} for planned `none` cells
+
+
+def decision_labels(records, tasks_dir=None):
+    """{(task, decision): label} from every record, excluded attempts included, then the bank's decisions.json."""
+    labels = {}
+    for record in records:
+        for task, decisions in (record.get("labels") or {}).items():
+            for decision, label in (decisions or {}).items():
+                labels.setdefault((task, decision), label)
+    if tasks_dir:
+        for path in sorted(Path(tasks_dir).glob("*/decisions.json")):
+            entries = read_json(path)
+            if not isinstance(entries, list) or not all(isinstance(e, dict) and "id" in e for e in entries):
+                raise ValueError(f"{path}: expected a list of decisions with `id` and `label`")
+            for entry in entries:
+                labels.setdefault((path.parent.name, entry["id"]), entry.get("label"))
+    return labels
+
+
+def planned_population(designs, experiment, labels):
+    """The Planned population of one experiment, or None when no design was recorded."""
+    if designs is None:
+        return None
+    tasks = []
+    decisions = {}
+    arms = set()
+    design = designs.get(experiment)
+    for trial in design["trials"] if design else []:
+        for task in trial["task_ids"]:
+            if task not in tasks:
+                tasks.append(task)
+            for decision, channel in (trial["channels"].get(task) or {}).items():
+                decisions[(task, decision)] = labels.get((task, decision))
+                if channel == "none":
+                    arms.add((task, decision, trial.get("arm")))
+    return Planned(tuple(tasks), decisions, frozenset(arms))
 
 
 # ---------------------------------------------------------------- statistics
@@ -520,12 +652,15 @@ def stratified(name, rule, make):
     return {"name": name, "rule": rule, "strata": strata, "verdict": verdict}
 
 
-def compute_p1(obs, seed, n_boot=N_BOOT, n_tasks=None):
-    """n_tasks: all E1 tasks (default: tasks with any arbitrary observation); tasks without an effect are ties."""
+def compute_p1(obs, seed, n_boot=N_BOOT, planned=None):
+    """planned: the design's E1 Planned population; its tasks are all E1 tasks, and a task without a computable
+    effect (all its trials excluded, or one side unobserved) is a tie. Without it, all tasks are those with
+    any arbitrary observation."""
     arb = [o for o in obs if arbitrary(o)]
     effects = task_differences(arb, lambda o: o.channel in SETTLED, lambda o: o.channel == "none")
-    total = max(len(effects), n_tasks if n_tasks is not None else len({o.task for o in arb}))
-    test = sign_test(list(effects.values()), total)
+    tasks = set(planned.tasks) if planned is not None else {o.task for o in arb}
+    tasks |= set(effects)
+    test = sign_test(list(effects.values()), len(tasks))
     median = statistics.median(effects.values()) if effects else None
     rule_a = (
         "exact binomial over all tasks, ties against the tested direction; supported: median >= +0.30 and "
@@ -551,6 +686,7 @@ def compute_p1(obs, seed, n_boot=N_BOOT, n_tasks=None):
         "positive_tasks": test["positive"],
         "negative_tasks": test["negative"],
         "tied_tasks": test["ties"],
+        "tasks_without_effect": sorted(tasks - set(effects)),
         "critical_count": test["critical"],
         "sign_test_p_positive": test["p_positive"],
         "sign_test_p_negative": test["p_negative"],
@@ -610,20 +746,29 @@ def compute_p3(obs, seed, n_boot=N_BOOT):
     return {"id": "P3", "components": [comp], "verdict": combine([comp])}
 
 
-def p4_unidentified(obs, label):
-    """Decisions of a stratum whose `none` cells lack the <= 0.4 or the >= 0.6 sibling-check side."""
+def p4_unidentified(obs, planned=None):
+    """{stratum: [task/decision]} for decisions whose counted `none` cells lack the <= 0.4 or the >= 0.6
+    sibling-check side. planned (the design's population) adds decisions with no counted cell at all; one
+    whose label is unknown is listed under `unknown`, since it may belong to either stratum."""
+    labels = dict(planned.decisions) if planned is not None else {}
     sides = {}
     for o in obs:
-        if o.label != label:
-            continue
+        if labels.get((o.task, o.decision)) is None:
+            labels[(o.task, o.decision)] = o.label
         seen = sides.setdefault((o.task, o.decision), set())
         if o.channel == "none":
             s = _r(o.sib)
             seen.add("high" if s >= 0.6 else "low" if s <= 0.4 else "mid")
-    return sorted(f"{t}/{d}" for (t, d), seen in sides.items() if not {"high", "low"} <= seen)
+    out = {label: [] for label in STRATA}
+    for (task, decision), label in sorted(labels.items()):
+        if label not in STRATA and label is not None:
+            continue
+        if not {"high", "low"} <= sides.get((task, decision), set()):
+            out.setdefault(label or "unknown", []).append(f"{task}/{decision}")
+    return out
 
 
-def compute_p4(obs, seed, n_boot=N_BOOT):
+def compute_p4(obs, seed, n_boot=N_BOOT, planned=None):
     rule = (
         "`none` cells, sibling-check >= 0.6 minus <= 0.4 per decision, averaged per task; supported: |d| < 0.10, "
         "CI within ±0.15; falsified: CI beyond ±0.15"
@@ -636,7 +781,7 @@ def compute_p4(obs, seed, n_boot=N_BOOT):
         )
 
     comp = stratified("P4", rule + STRATA_RULE + "; not supported if any decision is unidentified", make)
-    unidentified = {label: p4_unidentified(obs, label) for label in STRATA}
+    unidentified = p4_unidentified(obs, planned)
     count = sum(len(v) for v in unidentified.values())
     comp["unidentified_decisions"] = unidentified
     comp["unidentified_count"] = count
@@ -668,9 +813,18 @@ def kappa_problem(kappa):
     return None
 
 
-def compute_p5(obs, seed, kappa, n_boot=N_BOOT):
+def compute_p5(obs, seed, kappa, n_boot=N_BOOT, planned=None):
+    """planned: the design's E2 Planned population. A planned unsettled (task, decision, arm) cell of an
+    arbitrary or unknown-label decision with no counted observation is unjudged, so P5 is inconclusive."""
     arb = [o for o in obs if arbitrary(o) and o.channel == "none"]
     unjudged = sum(1 for o in arb if o.disclosed is None)
+    unobserved = []
+    if planned is not None:
+        seen = {(o.task, o.decision, o.arm) for o in obs if o.channel == "none"}
+        unobserved = sorted(
+            (cell for cell in planned.unsettled_arms - seen if planned.decisions.get(cell[:2]) in ("arbitrary", None)),
+            key=lambda cell: tuple(map(str, cell)),
+        )
     a = mean_component(
         "P5a",
         task_disclosure(arb, "plain"),
@@ -704,6 +858,8 @@ def compute_p5(obs, seed, kappa, n_boot=N_BOOT):
     reasons = []
     if unjudged:
         reasons.append(f"{unjudged} of {len(arb)} eligible decision(s) unjudged")
+    if unobserved:
+        reasons.append(f"{len(unobserved)} planned eligible (task, decision, arm) cell(s) with no counted trial")
     problem = kappa_problem(kappa)
     if problem:
         reasons.append(problem)
@@ -714,6 +870,7 @@ def compute_p5(obs, seed, kappa, n_boot=N_BOOT):
         "kappa": kappa,
         "eligible_decisions": len(arb),
         "unjudged_decisions": unjudged,
+        "unobserved_planned_cells": ["/".join(map(str, cell)) for cell in unobserved],
     }
     if reasons:
         out["note"] = "P5 cannot resolve: " + "; ".join(reasons) + " (§3.1, §3.2)"
@@ -888,8 +1045,12 @@ def withhold(predictions, status):
                 sub["verdict"] = status
 
 
-def analyze(records, seed=0, kappa=None, n_boot=N_BOOT, tasks_dir=None, confinement_review=None):
-    counted, infra = select_counted(records, confinement_review)
+def analyze(records, design=None, seed=0, kappa=None, n_boot=N_BOOT, tasks_dir=None, confinement_review=None):
+    """design: the parsed design.json (one design or a list of them); without it the run is invalid."""
+    designs = normalize_designs(design)
+    counted, infra = select_counted(records, confinement_review, designs)
+    labels = decision_labels(records, tasks_dir)
+    planned = {exp: planned_population(designs, exp, labels) for exp in ("E1", "E2")}
     e1, missing_e1 = observations(counted, "E1")
     e2, missing_e2 = observations(counted, "E2")
     e3, missing_e3 = (
@@ -905,7 +1066,7 @@ def analyze(records, seed=0, kappa=None, n_boot=N_BOOT, tasks_dir=None, confinem
     )
     infra["missing_results"] = {"E1": missing_e1, "E2": missing_e2, "E3": missing_e3}
     validity = infra.pop("validity")
-    e1_tasks = len({o.task for o in e1})
+    e1_tasks = len(planned["E1"].tasks) if planned["E1"] is not None else len({o.task for o in e1})
     warnings = []
     if e1 and e1_tasks < BANK_MIN_TASKS:
         warnings.append(f"E1 has {e1_tasks} tasks; the spec's minimum bank is {BANK_MIN_TASKS}")
@@ -920,11 +1081,11 @@ def analyze(records, seed=0, kappa=None, n_boot=N_BOOT, tasks_dir=None, confinem
     if infra["duplicate_attempt_numbers"]:
         warnings.append("duplicate attempt numbers for one seed; the last line was used")
     predictions = [
-        compute_p1(e1, seed, n_boot, n_tasks=e1_tasks),
+        compute_p1(e1, seed, n_boot, planned["E1"]),
         compute_p2(e1, seed, n_boot),
         compute_p3(e1, seed, n_boot),
-        compute_p4(e1, seed, n_boot),
-        compute_p5(e2, seed, kappa, n_boot),
+        compute_p4(e1, seed, n_boot, planned["E1"]),
+        compute_p5(e2, seed, kappa, n_boot, planned["E2"]),
         compute_p6(e3, seed, n_boot),
     ]
     if validity["status"] != "valid":
@@ -1031,6 +1192,8 @@ def to_markdown(result):
         f"| Missing decision results | {infra['missing_results']} |",
         f"| Runtime mismatches / unknown | {infra['runtime_mismatches']} / {infra['runtime_match_unknown']} |",
         f"| Spec files changed / unknown | {infra['spec_files_tampered']} / {infra['spec_files_integrity_unknown']} |",
+        "| Records off design.json | "
+        + (f"{infra['records_off_design']} |" if infra["design_recorded"] else "no design.json |"),
         f"| Confinement signals / recorded violations | {infra['confinement_signals']} / "
         f"{infra['confinement_violations_recorded']} |",
     ]
@@ -1054,6 +1217,7 @@ def main(argv=None):
     parser.add_argument("--n-boot", type=int, default=N_BOOT, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     trials = args.run_dir / "trials.jsonl"
+    design_path = args.run_dir / "design.json"
     kappa = args.kappa
     audit = args.run_dir / "disclosure_audit.json"
     try:
@@ -1065,6 +1229,7 @@ def main(argv=None):
             raise ValueError(f"{review_path}: expected a JSON object")
         result = analyze(
             load_records(trials),
+            design=read_json(design_path) if design_path.exists() else None,
             seed=args.seed,
             kappa=kappa,
             n_boot=args.n_boot,
@@ -1072,6 +1237,8 @@ def main(argv=None):
             confinement_review=review,
         )
         result["input_sha256"] = hashlib.sha256(trials.read_bytes()).hexdigest()
+        if design_path.exists():
+            result["design_sha256"] = hashlib.sha256(design_path.read_bytes()).hexdigest()
         markdown = to_markdown(result)
         (args.run_dir / "analysis.json").write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"

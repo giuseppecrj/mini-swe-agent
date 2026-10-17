@@ -85,6 +85,38 @@ def e1_records(outcome, n_tasks=12, n_trials=16, seed=0, labels=None):
     return records
 
 
+def design_for(records):
+    """The pre-run design the records were drawn from: one design per experiment, every distinct trial planned."""
+    designs = {}
+    for r in records:
+        design = designs.setdefault(
+            r["experiment"],
+            {
+                "experiment": r["experiment"],
+                "design_id": r["design_id"],
+                "task_bank_sha256": r["task_bank_sha256"],
+                "trials": {},
+            },
+        )
+        design["trials"].setdefault(
+            r["seed"],
+            {"seed": r["seed"], **{f: json.loads(json.dumps(r[f])) for f in ("task_ids", "channels", "filler", "arm")}},
+        )
+    return [{**d, "trials": list(d["trials"].values())} for d in designs.values()]
+
+
+def analyze(records, **kwargs):
+    """analysis.analyze with the design the records came from, unless a test passes its own."""
+    kwargs.setdefault("design", design_for(records))
+    return analysis.analyze(records, **kwargs)
+
+
+def write_run(run, records, design=True):
+    (run / "trials.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    if design:
+        (run / "design.json").write_text(json.dumps(design_for(records)), encoding="utf-8")
+
+
 def bernoulli(settled, unsettled, other=0.95):
     def outcome(rng, task, decision, label, channel, filler, sib):
         if label != "arbitrary":
@@ -155,11 +187,11 @@ class SignTestTests(unittest.TestCase):
 
             return fn
 
-        up = analysis.analyze(e1_records(outcome(True)), seed=1, n_boot=200)
+        up = analyze(e1_records(outcome(True)), seed=1, n_boot=200)
         p1a = up["predictions"][0]["components"][0]
         self.assertEqual((p1a["positive_tasks"], p1a["tied_tasks"], p1a["critical_count"]), (9, 3, 10))
         self.assertEqual(p1a["verdict"], "inconclusive")
-        down = analysis.analyze(e1_records(outcome(False)), seed=1, n_boot=200)
+        down = analyze(e1_records(outcome(False)), seed=1, n_boot=200)
         self.assertEqual(verdicts(down)["P1a"], "inconclusive")
 
 
@@ -207,7 +239,7 @@ class HelperTests(unittest.TestCase):
 
 class E1PredictionTests(unittest.TestCase):
     def test_clean_strong_effect_supports_p1_to_p4(self):
-        result = analysis.analyze(e1_records(perfect), seed=1)
+        result = analyze(e1_records(perfect), seed=1)
         v = verdicts(result)
         self.assertEqual(result["status"], "valid")
         for key in ("P1", "P1a", "P1b", "P1c", "P2", "P3", "P4"):
@@ -221,7 +253,7 @@ class E1PredictionTests(unittest.TestCase):
         self.assertEqual((p1a["positive_tasks"], p1a["negative_tasks"]), (12, 0))
 
     def test_noisy_strong_effect_is_recovered(self):
-        result = analysis.analyze(e1_records(bernoulli(0.97, 0.2), seed=5), seed=2, n_boot=2000)
+        result = analyze(e1_records(bernoulli(0.97, 0.2), seed=5), seed=2, n_boot=2000)
         v = verdicts(result)
         self.assertEqual(v["P1"], "supported")
         p1 = result["predictions"][0]["components"]
@@ -232,14 +264,14 @@ class E1PredictionTests(unittest.TestCase):
 
     def test_null_effect_does_not_support_p1(self):
         for rate in (0.5, 0.85):
-            result = analysis.analyze(e1_records(bernoulli(rate, rate), seed=7), seed=3, n_boot=2000)
+            result = analyze(e1_records(bernoulli(rate, rate), seed=7), seed=3, n_boot=2000)
             v = verdicts(result)
             self.assertNotEqual(v["P1"], "supported", rate)
             self.assertNotEqual(v["P1a"], "supported", rate)
         self.assertEqual(v["P1c"], "falsified")  # unsettled 0.85 is not arbitrary for this agent
 
     def test_execution_failure_falsifies_p1_through_settled_component(self):
-        result = analysis.analyze(e1_records(bernoulli(0.6, 0.05), seed=11), seed=4, n_boot=2000)
+        result = analyze(e1_records(bernoulli(0.6, 0.05), seed=11), seed=4, n_boot=2000)
         v = verdicts(result)
         self.assertEqual(v["P1a"], "supported")
         self.assertEqual(v["P1b"], "falsified")
@@ -249,14 +281,14 @@ class E1PredictionTests(unittest.TestCase):
         def outcome(rng, task, decision, label, channel, filler, sib):
             return channel == "none"
 
-        v = verdicts(analysis.analyze(e1_records(outcome), seed=1, n_boot=500))
+        v = verdicts(analyze(e1_records(outcome), seed=1, n_boot=500))
         self.assertEqual(v["P1a"], "falsified")
 
     def test_channel_gap_falsifies_p2(self):
         def outcome(rng, task, decision, label, channel, filler, sib):
             return channel in ("contract", "both")
 
-        result = analysis.analyze(e1_records(outcome), seed=1, n_boot=500)
+        result = analyze(e1_records(outcome), seed=1, n_boot=500)
         self.assertEqual(verdicts(result)["P2"], "falsified")
         self.assertEqual(stratum(result, 1, "arbitrary")["estimate"], 1.0)
 
@@ -264,7 +296,7 @@ class E1PredictionTests(unittest.TestCase):
         def outcome(rng, task, decision, label, channel, filler, sib):
             return channel != "none" or filler
 
-        result = analysis.analyze(e1_records(outcome), seed=1, n_boot=500)
+        result = analyze(e1_records(outcome), seed=1, n_boot=500)
         self.assertEqual(verdicts(result)["P3"], "falsified")
         self.assertEqual(verdicts(result)["P2"], "supported")
 
@@ -272,7 +304,7 @@ class E1PredictionTests(unittest.TestCase):
         def outcome(rng, task, decision, label, channel, filler, sib):
             return channel != "none" or sib >= 0.5
 
-        result = analysis.analyze(e1_records(outcome), seed=1, n_boot=500)
+        result = analyze(e1_records(outcome), seed=1, n_boot=500)
         self.assertEqual(verdicts(result)["P4"], "falsified")
         self.assertEqual(stratum(result, 3, "arbitrary")["estimate"], 1.0)
 
@@ -283,14 +315,14 @@ class E1PredictionTests(unittest.TestCase):
                 return rng.random() < 0.7
             return channel != "none"
 
-        v = verdicts(analysis.analyze(e1_records(outcome, seed=2), seed=1, n_boot=2000))
+        v = verdicts(analyze(e1_records(outcome, seed=2), seed=1, n_boot=2000))
         self.assertEqual(v["P2"], "inconclusive")
 
     def test_deterministic_given_seed(self):
         records = e1_records(bernoulli(0.9, 0.4), seed=13)
-        first = json.dumps(analysis.analyze(records, seed=9, n_boot=1000), sort_keys=True)
-        second = json.dumps(analysis.analyze(records, seed=9, n_boot=1000), sort_keys=True)
-        other = json.dumps(analysis.analyze(records, seed=10, n_boot=1000), sort_keys=True)
+        first = json.dumps(analyze(records, seed=9, n_boot=1000), sort_keys=True)
+        second = json.dumps(analyze(records, seed=9, n_boot=1000), sort_keys=True)
+        other = json.dumps(analyze(records, seed=10, n_boot=1000), sort_keys=True)
         self.assertEqual(first, second)
         self.assertNotEqual(first, other)
 
@@ -298,7 +330,7 @@ class E1PredictionTests(unittest.TestCase):
         def outcome(rng, task, decision, label, channel, filler, sib):
             return channel != "none"
 
-        result = analysis.analyze(e1_records(outcome, n_tasks=1), seed=1, n_boot=200)
+        result = analyze(e1_records(outcome, n_tasks=1), seed=1, n_boot=200)
         self.assertTrue(all(verdicts(result)[p] == "inconclusive" for p in ("P1", "P2", "P3", "P4")))
         self.assertTrue(any("minimum bank" in w for w in result["warnings"]))
 
@@ -323,7 +355,7 @@ class StrataTests(unittest.TestCase):
             return perfect(rng, task, decision, label, channel, filler, sib)
 
         for outcome, key in ((channel_gap, "P2"), (filler_gap, "P3"), (spillover, "P4")):
-            v = verdicts(analysis.analyze(e1_records(outcome), seed=1, n_boot=500))
+            v = verdicts(analyze(e1_records(outcome), seed=1, n_boot=500))
             self.assertEqual(v[f"{key}[arbitrary]"], "supported", key)
             self.assertEqual(v[f"{key}[inferable]"], "falsified", key)
             self.assertEqual(v[key], "falsified", key)
@@ -335,7 +367,7 @@ class StrataTests(unittest.TestCase):
                 return channel in ("contract", "both")
             return perfect(rng, task, decision, label, channel, filler, sib)
 
-        result = analysis.analyze(e1_records(outcome), seed=1, n_boot=500)
+        result = analyze(e1_records(outcome), seed=1, n_boot=500)
         self.assertEqual(verdicts(result)["P2"], "supported")
         preserve = result["descriptive"]["E1"]["rates_by_label_and_channel"]["preserve"]
         self.assertEqual(preserve["check"]["rate"], 0.0)
@@ -346,7 +378,7 @@ class StrataTests(unittest.TestCase):
                 return LABELS
             return {d: ("arbitrary" if label == "inferable" else label) for d, label in LABELS.items()}
 
-        result = analysis.analyze(e1_records(perfect, labels=labels), seed=1, n_boot=500)
+        result = analyze(e1_records(perfect, labels=labels), seed=1, n_boot=500)
         v = verdicts(result)
         for key in ("P2", "P3", "P4"):
             self.assertEqual(v[f"{key}[arbitrary]"], "supported", key)
@@ -366,7 +398,7 @@ class StrataTests(unittest.TestCase):
                     chans["d0"] = "contract"
                     changed += 1
         self.assertGreater(changed, 0)
-        result = analysis.analyze(records, seed=1, n_boot=500)
+        result = analyze(records, seed=1, n_boot=500)
         p4 = result["predictions"][3]
         self.assertEqual(p4["unidentified_count"], 1)
         self.assertEqual(p4["components"][0]["unidentified_decisions"], {"arbitrary": ["task00/d0"], "inferable": []})
@@ -383,7 +415,7 @@ class StrataTests(unittest.TestCase):
             chans = rec["channels"].get("task00")
             if chans and chans["d0"] == "none":
                 chans["d0"] = "contract"
-        result = analysis.analyze(records, seed=1, n_boot=500)
+        result = analyze(records, seed=1, n_boot=500)
         self.assertEqual(result["predictions"][3]["unidentified_count"], 1)
         self.assertEqual(verdicts(result)["P4"], "falsified")
 
@@ -405,7 +437,7 @@ class InfrastructureTests(unittest.TestCase):
         # Seed 1 failed twice: excluded and reported as unresolved.
         lost = [dict(clean[1], attempt=a, infrastructure_failure="no_settle") for a in (1, 2)]
         records = [junk, *lost, rerun, *clean[2:]]
-        result = analysis.analyze(records, seed=1, n_boot=500)
+        result = analyze(records, seed=1, n_boot=500)
         infra = result["infrastructure"]
         self.assertEqual(infra["distinct_trials"], len(clean))
         self.assertEqual(infra["counted_trials"], len(clean) - 1)
@@ -463,12 +495,12 @@ class InvalidRunTests(unittest.TestCase):
     def test_missing_runtime_field_invalidates(self):
         records = e1_records(perfect)
         del records[3]["runtime_matches_request"]
-        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "runtime_matches_request")
+        self.assert_invalid(analyze(records, seed=1, n_boot=200), "runtime_matches_request")
 
     def test_runtime_mismatch_invalidates(self):
         records = e1_records(perfect)
         records[3]["runtime_matches_request"] = False
-        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "runtime_matches_request")
+        self.assert_invalid(analyze(records, seed=1, n_boot=200), "runtime_matches_request")
 
     def test_infrastructure_denominator_is_distinct_trials(self):
         # 19 distinct trials, one failed first attempt rerun successfully: 1/19 = 5.3% > 5% fails the gate,
@@ -477,47 +509,55 @@ class InvalidRunTests(unittest.TestCase):
         base = [r for r in records if r["seed"] < 19]
         failed = dict(base[0], infrastructure_failure="provider_error")
         rerun = dict(base[0], attempt=2)
-        result = analysis.analyze([failed, rerun, *base[1:]], seed=1, n_boot=200)
+        result = analyze([failed, rerun, *base[1:]], seed=1, n_boot=200)
         self.assertEqual(result["infrastructure"]["distinct_trials"], 19)
         self.assert_invalid(result, "infrastructure-failure rate")
         # 20 distinct trials with one failure: exactly 5% passes.
         base = [r for r in records if r["seed"] < 20]
         failed = dict(base[0], infrastructure_failure="provider_error")
         rerun = dict(base[0], attempt=2)
-        self.assertEqual(analysis.analyze([failed, rerun, *base[1:]], seed=1, n_boot=200)["status"], "valid")
+        self.assertEqual(analyze([failed, rerun, *base[1:]], seed=1, n_boot=200)["status"], "valid")
 
     def test_tampering_invalidates(self):
         records = e1_records(perfect)
         records[5]["spec_files_intact"] = False
-        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "prompt.txt or visible checks")
+        self.assert_invalid(analyze(records, seed=1, n_boot=200), "prompt.txt or visible checks")
         records[5]["spec_files_intact"] = True
         del records[6]["spec_files_intact"]
-        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "integrity unknown")
+        self.assert_invalid(analyze(records, seed=1, n_boot=200), "integrity unknown")
+
+    def test_only_literal_true_clears_integrity(self):
+        # Regression (T5 round-2 review, finding 2): falsy or string values passed the tampering gate.
+        for value in (None, 0, "", "false", "true", 1, [], {}):
+            records = e1_records(perfect, n_tasks=10, n_trials=8)
+            records[5]["spec_files_intact"] = value
+            result = analyze(records, seed=1, n_boot=100)
+            self.assert_invalid(result, "integrity unknown")
+            self.assertFalse(result["validity"]["gates"]["spec_files_intact"], value)
+            self.assertEqual(result["infrastructure"]["spec_files_integrity_unknown"], 1, value)
 
     def test_tampering_on_an_infrastructure_attempt_invalidates(self):
         records = e1_records(perfect)
         failed = dict(records[0], infrastructure_failure="no_settle", spec_files_intact=False)
         rerun = dict(records[0], attempt=2)
-        result = analysis.analyze([failed, rerun, *records[1:]], seed=1, n_boot=200)
+        result = analyze([failed, rerun, *records[1:]], seed=1, n_boot=200)
         self.assert_invalid(result, "prompt.txt or visible checks")
 
     def test_confirmed_confinement_violation_invalidates(self):
         records = e1_records(perfect)
         records[2]["confinement_signals"] = [{"kind": "denied_path", "detail": "read: ../runner.py", "confirmed": True}]
-        self.assert_invalid(analysis.analyze(records, seed=1, n_boot=200), "confinement violation")
+        self.assert_invalid(analyze(records, seed=1, n_boot=200), "confinement violation")
         records[2]["confinement_signals"] = [{"kind": "denied_path", "detail": "read: ../runner.py"}]
         review = {"signals_reviewed": 1, "confirmed_violations": 1}
-        self.assert_invalid(
-            analysis.analyze(records, seed=1, n_boot=200, confinement_review=review), "confinement violation"
-        )
+        self.assert_invalid(analyze(records, seed=1, n_boot=200, confinement_review=review), "confinement violation")
 
     def test_unreviewed_signals_withhold_verdicts(self):
         records = e1_records(perfect)
         records[2]["confinement_signals"] = [{"kind": "absolute_path", "detail": "read: /etc/hostname"}]
-        result = analysis.analyze(records, seed=1, n_boot=200)
+        result = analyze(records, seed=1, n_boot=200)
         self.assertEqual(result["status"], "pending_review")
         self.assertEqual(set(verdicts(result).values()), {"pending_review"})
-        cleared = analysis.analyze(
+        cleared = analyze(
             records, seed=1, n_boot=200, confinement_review={"signals_reviewed": 1, "confirmed_violations": 0}
         )
         self.assertEqual(cleared["status"], "valid")
@@ -525,7 +565,7 @@ class InvalidRunTests(unittest.TestCase):
 
     def test_bad_review_is_rejected(self):
         with self.assertRaises(ValueError):
-            analysis.analyze(e1_records(perfect, n_tasks=2, n_trials=8), confinement_review={"signals_reviewed": "x"})
+            analyze(e1_records(perfect, n_tasks=2, n_trials=8), confinement_review={"signals_reviewed": "x"})
 
 
 def e2_records(plain_rate, assume_rate, satisfied=lambda rng, arm: rng.random() < 0.3, n_tasks=12, per_arm=4, seed=0):
@@ -548,31 +588,31 @@ def e2_records(plain_rate, assume_rate, satisfied=lambda rng, arm: rng.random() 
 class E2PredictionTests(unittest.TestCase):
     def test_disclosure_effect_supports_p5_with_good_kappa(self):
         records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
-        v = verdicts(analysis.analyze(records, seed=1, kappa=0.8, n_boot=1000))
+        v = verdicts(analyze(records, seed=1, kappa=0.8, n_boot=1000))
         self.assertEqual((v["P5a"], v["P5b"], v["P5c"], v["P5"]), ("supported",) * 4)
 
     def test_kappa_gate(self):
         records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
-        self.assertEqual(verdicts(analysis.analyze(records, seed=1, kappa=0.5, n_boot=200))["P5"], "inconclusive")
-        result = analysis.analyze(records, seed=1, kappa=None, n_boot=200)
+        self.assertEqual(verdicts(analyze(records, seed=1, kappa=0.5, n_boot=200))["P5"], "inconclusive")
+        result = analyze(records, seed=1, kappa=None, n_boot=200)
         self.assertEqual(verdicts(result)["P5"], "inconclusive")
         self.assertIn("kappa", result["predictions"][4]["note"])
 
     def test_no_disclosure_change_falsifies_p5(self):
-        v = verdicts(analysis.analyze(e2_records(0.1, 0.1, seed=3), seed=1, kappa=0.9, n_boot=1000))
+        v = verdicts(analyze(e2_records(0.1, 0.1, seed=3), seed=1, kappa=0.9, n_boot=1000))
         self.assertEqual(v["P5b"], "falsified")
         self.assertEqual(v["P5"], "falsified")
 
     def test_correctness_change_falsifies_p5c(self):
         records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: arm == "assume")
-        v = verdicts(analysis.analyze(records, seed=1, kappa=0.9, n_boot=500))
+        v = verdicts(analyze(records, seed=1, kappa=0.9, n_boot=500))
         self.assertEqual(v["P5c"], "falsified")
 
     def test_unjudged_decisions_are_counted(self):
         records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
         for r in records:
             r.pop("disclosed")
-        result = analysis.analyze(records, seed=1, kappa=0.9, n_boot=200)
+        result = analyze(records, seed=1, kappa=0.9, n_boot=200)
         p5 = result["predictions"][4]
         self.assertEqual(p5["unjudged_decisions"], 12 * 8 * 2)
         self.assertEqual(p5["eligible_decisions"], 12 * 8 * 2)
@@ -584,22 +624,38 @@ class E2PredictionTests(unittest.TestCase):
         records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
         task = records[0]["task_ids"][0]
         del records[0]["disclosed"][task]["d0"]
-        result = analysis.analyze(records, seed=1, kappa=0.9, n_boot=500)
+        result = analyze(records, seed=1, kappa=0.9, n_boot=500)
         p5 = result["predictions"][4]
         self.assertEqual(p5["unjudged_decisions"], 1)
         self.assertEqual([c["verdict"] for c in p5["components"]], ["supported"] * 3)
         self.assertEqual(p5["verdict"], "inconclusive")
         self.assertIn("unjudged", p5["note"])
 
+    def test_non_boolean_judgements_are_unjudged(self):
+        # Regression (T5 round-2 review, finding 3): "false" or 0 was read as a judgement (and "true" as false).
+        for value in ("true", "false", 1, 0, None, "yes", [True]):
+            records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
+            task = records[0]["task_ids"][0]
+            records[0]["disclosed"][task]["d0"] = value
+            p5 = analyze(records, seed=1, kappa=0.9, n_boot=200)["predictions"][4]
+            self.assertEqual(p5["unjudged_decisions"], 1, value)
+            self.assertEqual(p5["verdict"], "inconclusive", value)
+        records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
+        for r in records:
+            r["disclosed"] = {t: {d: int(v) for d, v in m.items()} for t, m in r["disclosed"].items()}
+        p5 = analyze(records, seed=1, kappa=0.9, n_boot=200)["predictions"][4]
+        self.assertEqual(p5["unjudged_decisions"], p5["eligible_decisions"])
+        self.assertEqual(p5["components"][0]["verdict"], "inconclusive")
+        records[0]["disclosed"] = "malformed"
+        self.assertEqual(analyze(records, seed=1, kappa=0.9, n_boot=50)["predictions"][4]["verdict"], "inconclusive")
+
     def test_non_finite_or_invalid_kappa_makes_p5_inconclusive(self):
         # Regression (T5 review, finding 2): NaN < 0.6 is False, so NaN used to pass the kappa gate.
         records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
         for kappa in (math.nan, math.inf, -math.inf, "0.9", True, 1.5):
-            result = analysis.analyze(records, seed=1, kappa=kappa, n_boot=200)
+            result = analyze(records, seed=1, kappa=kappa, n_boot=200)
             self.assertEqual(result["predictions"][4]["verdict"], "inconclusive", kappa)
-        self.assertEqual(
-            analysis.analyze(records, seed=1, kappa=0.6, n_boot=200)["predictions"][4]["verdict"], "supported"
-        )
+        self.assertEqual(analyze(records, seed=1, kappa=0.6, n_boot=200)["predictions"][4]["verdict"], "supported")
 
     def test_inferable_only_satisfaction_change_blocks_p5c(self):
         # Regression (T5 review, finding 1): P5(c) is evaluated in both strata.
@@ -611,7 +667,7 @@ class E2PredictionTests(unittest.TestCase):
                 for d, label in LABELS.items():
                     if label == "inferable":
                         r["decision_results"][task][d] = rng.random() < 0.5
-        v = verdicts(analysis.analyze(records, seed=1, kappa=0.9, n_boot=500))
+        v = verdicts(analyze(records, seed=1, kappa=0.9, n_boot=500))
         self.assertEqual(v["P5c[arbitrary]"], "supported")
         self.assertEqual(v["P5c[inferable]"], "falsified")
         self.assertEqual(v["P5c"], "falsified")
@@ -646,12 +702,137 @@ def independent(rng, tasks, rates):
     return {t: rng.random() < rates[t] for t in tasks}
 
 
+class DesignPopulationTests(unittest.TestCase):
+    """Regression (T5 round-2 review, finding 1): populations come from design.json, not counted observations."""
+
+    def reviewer_run(self):
+        # E1 10 tasks x 8 trials, E2 10 x 12 per arm; every E1 trial of task08 fails twice on infrastructure
+        # (16 failed attempts / 320 distinct trials = 5%, a valid run). task09 has no effect (a tie); the other
+        # 8 tasks have a perfect positive effect.
+        def outcome(rng, task, decision, label, channel, filler, sib):
+            return True if task == "task09" else perfect(rng, task, decision, label, channel, filler, sib)
+
+        e1 = []
+        for r in e1_records(outcome, n_tasks=10, n_trials=8):
+            if r["task_ids"] == ["task08"]:
+                e1 += [dict(r, attempt=a, infrastructure_failure="no_settle") for a in (1, 2)]
+            else:
+                e1.append(r)
+        e2 = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True, n_tasks=10, per_arm=12)
+        return e1 + e2
+
+    def test_entirely_excluded_task_counts_in_p1_and_p4(self):
+        records = self.reviewer_run()
+        result = analyze(records, seed=1, kappa=0.9, n_boot=500)
+        infra = result["infrastructure"]
+        self.assertEqual((infra["distinct_trials"], infra["infrastructure_failed_attempts"]), (320, 16))
+        self.assertEqual(result["status"], "valid")
+        p1a = result["predictions"][0]["components"][0]
+        self.assertEqual((p1a["positive_tasks"], p1a["tied_tasks"], p1a["sign_test_tasks"]), (8, 2, 10))
+        self.assertEqual(p1a["tasks_without_effect"], ["task08"])
+        self.assertAlmostEqual(p1a["sign_test_p_positive"], 56 / 1024)  # 0.0547
+        self.assertEqual(p1a["verdict"], "inconclusive")
+        self.assertEqual(result["predictions"][0]["verdict"], "inconclusive")
+        p4 = result["predictions"][3]
+        self.assertEqual(
+            p4["components"][0]["unidentified_decisions"],
+            {"arbitrary": ["task08/d0", "task08/d1"], "inferable": ["task08/d2", "task08/d3", "task08/d4"]},
+        )
+        self.assertNotEqual(p4["verdict"], "supported")
+        # The counted observations alone (the old population) gave a 9-task test, p = 0.0195, and support.
+        e1 = analysis.observations([r for r in records if not r["infrastructure_failure"]], "E1")[0]
+        old = analysis.compute_p1(e1, 1, 200)["components"][0]
+        self.assertAlmostEqual(old["sign_test_p_positive"], 10 / 512)
+        self.assertEqual(old["verdict"], "supported")
+        self.assertEqual(analysis.compute_p4(e1, 1, 200)["verdict"], "supported")
+
+    def test_unknown_labels_of_an_excluded_task_still_block_p4(self):
+        records = [r for r in self.reviewer_run() if r["experiment"] == "E1"]
+        labels = {k: v for k, v in analysis.decision_labels(records).items() if k[0] != "task08"}
+        planned = analysis.planned_population(analysis.normalize_designs(design_for(records)), "E1", labels)
+        e1 = analysis.observations([r for r in records if not r["infrastructure_failure"]], "E1")[0]
+        p4 = analysis.compute_p4(e1, 1, 200, planned)
+        unidentified = p4["components"][0]["unidentified_decisions"]
+        self.assertEqual(len(unidentified["unknown"]), 6)  # preserve may be any label once unknown
+        self.assertEqual(p4["verdict"], "inconclusive")
+
+    def test_labels_fall_back_to_the_bank(self):
+        records = self.reviewer_run()
+        for r in records:
+            if r["experiment"] == "E1" and r["task_ids"] == ["task08"]:
+                del r["labels"]
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "task08").mkdir()
+            bank = [{"id": d, "label": label} for d, label in LABELS.items()]
+            (Path(tmp) / "task08" / "decisions.json").write_text(json.dumps(bank), encoding="utf-8")
+            result = analyze(records, seed=1, kappa=0.9, n_boot=200, tasks_dir=tmp)
+        unidentified = result["predictions"][3]["components"][0]["unidentified_decisions"]
+        self.assertEqual(unidentified["arbitrary"], ["task08/d0", "task08/d1"])
+        self.assertNotIn("unknown", unidentified)
+
+    def test_excluded_e2_task_leaves_p5_inconclusive(self):
+        records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True)
+        result = analyze(records, seed=1, kappa=0.9, n_boot=200)
+        self.assertEqual(result["predictions"][4]["verdict"], "supported")
+        lost = [
+            dict(r, attempt=a, infrastructure_failure="spawn")
+            for r in records
+            if r["task_ids"] == ["task03"] and r["arm"] == "plain"
+            for a in (1, 2)
+        ]
+        kept = [r for r in records if not (r["task_ids"] == ["task03"] and r["arm"] == "plain")]
+        rest = analyze(kept + lost, seed=1, kappa=0.9, n_boot=200)
+        p5 = rest["predictions"][4]
+        self.assertEqual(rest["status"], "invalid")  # 8 failed attempts / 96 trials also fails the 5% gate
+        self.assertEqual(p5["unobserved_planned_cells"], ["task03/d0/plain", "task03/d1/plain"])
+        self.assertIn("no counted trial", p5["note"])
+        # Same population rule, without the infrastructure gate in the way.
+        planned = analysis.planned_population(
+            analysis.normalize_designs(design_for(records)), "E2", analysis.decision_labels(records)
+        )
+        e2 = analysis.observations(kept, "E2")[0]
+        self.assertEqual(analysis.compute_p5(e2, 1, 0.9, 200, planned)["verdict"], "inconclusive")
+        self.assertEqual(analysis.compute_p5(e2, 1, 0.9, 200)["verdict"], "supported")
+
+    def test_missing_design_invalidates(self):
+        result = analysis.analyze(e1_records(perfect), seed=1, n_boot=200)
+        self.assertEqual(result["status"], "invalid")
+        self.assertFalse(result["validity"]["gates"]["design_recorded"])
+        self.assertTrue(any("design.json missing" in f for f in result["validity"]["failed_gates"]))
+        self.assertEqual(set(verdicts(result).values()), {"invalid"})
+
+    def test_records_off_design_invalidate(self):
+        records = e1_records(perfect)
+        design = design_for(records)
+        changed = json.loads(json.dumps(records))
+        task = changed[4]["task_ids"][0]
+        changed[4]["channels"][task]["d0"] = "both" if changed[4]["channels"][task]["d0"] != "both" else "none"
+        result = analysis.analyze(changed, design=design, seed=1, n_boot=200)
+        self.assertEqual(result["infrastructure"]["records_off_design"], 1)
+        self.assertTrue(any("not a planned trial" in f for f in result["validity"]["failed_gates"]))
+        unplanned = analysis.analyze(records + [dict(records[0], seed=999)], design=design, seed=1, n_boot=200)
+        self.assertEqual(unplanned["status"], "invalid")
+        wrong_id = analysis.analyze(
+            [dict(r, trial_id="x") for r in records],
+            design=[{**design[0], "trials": [dict(t, trial_id=f"t{t['seed']}") for t in design[0]["trials"]]}],
+            seed=1,
+            n_boot=200,
+        )
+        self.assertEqual(wrong_id["status"], "invalid")
+        self.assertEqual(analysis.analyze(records, design=design[0], seed=1, n_boot=200)["status"], "valid")
+
+    def test_malformed_design_is_rejected(self):
+        for bad in ({"experiment": "E1"}, [{"experiment": "E1", "design_id": "x", "trials": [{"seed": 1}]}], 3):
+            with self.assertRaises(ValueError):
+                analysis.analyze(e1_records(perfect, n_tasks=2, n_trials=8), design=bad, n_boot=50)
+
+
 class E3PredictionTests(unittest.TestCase):
     rates = {f"task{t:02d}": r for t, r in enumerate((0.5, 0.6, 0.7, 0.8, 0.9, 0.65, 0.75, 0.85))}
 
     def test_independence_supports_p6(self):
         records = e3_records(self.rates, 150, {2: (400, independent), 4: (400, independent)}, seed=1)
-        result = analysis.analyze(records, seed=1, n_boot=1000)
+        result = analyze(records, seed=1, n_boot=1000)
         v = verdicts(result)
         self.assertEqual((v["P6-B2"], v["P6-B4"], v["P6"]), ("supported", "supported", "supported"))
 
@@ -661,7 +842,7 @@ class E3PredictionTests(unittest.TestCase):
             return dict.fromkeys(tasks, ok)
 
         records = e3_records(self.rates, 30, {2: (60, together), 4: (60, independent)}, seed=2)
-        result = analysis.analyze(records, seed=1, n_boot=1000)
+        result = analyze(records, seed=1, n_boot=1000)
         v = verdicts(result)
         self.assertEqual(v["P6-B2"], "falsified")
         self.assertEqual(v["P6"], "falsified")
@@ -671,7 +852,7 @@ class E3PredictionTests(unittest.TestCase):
 
     def test_small_samples_are_inconclusive(self):
         records = e3_records(self.rates, 3, {2: (8, independent), 4: (8, independent)}, seed=3)
-        v = verdicts(analysis.analyze(records, seed=1, n_boot=500))
+        v = verdicts(analyze(records, seed=1, n_boot=500))
         self.assertEqual(v["P6"], "inconclusive")
 
     def test_prediction_is_product_of_single_task_rates(self):
@@ -695,7 +876,7 @@ class CliTests(unittest.TestCase):
         records = e1_records(outcome, n_tasks=10, n_trials=8) + e2_records(0.0, 1.0, n_tasks=10)
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
-            (run / "trials.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            write_run(run, records)
             (run / "disclosure_audit.json").write_text(json.dumps({"kappa": 0.75}), encoding="utf-8")
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
@@ -705,6 +886,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result["seed"], 4)
         self.assertEqual(result["predictions"][4]["kappa"], 0.75)
         self.assertEqual(len(result["input_sha256"]), 64)
+        self.assertEqual(len(result["design_sha256"]), 64)
         self.assertIn("| P1 | supported |", markdown)
         self.assertIn("| P1a |", markdown)
         self.assertEqual(out.getvalue(), markdown)
@@ -715,7 +897,7 @@ class CliTests(unittest.TestCase):
         records[0]["confinement_signals"] = [{"kind": "home_path", "detail": "bash: ~"}]
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
-            (run / "trials.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            write_run(run, records)
             with contextlib.redirect_stdout(io.StringIO()):
                 analysis.main([str(run), "--n-boot", "100"])
             self.assertEqual(
@@ -728,6 +910,20 @@ class CliTests(unittest.TestCase):
             result = json.loads((run / "analysis.json").read_text(encoding="utf-8"))
         self.assertEqual(result["status"], "invalid")
         self.assertEqual(result["predictions"][0]["verdict"], "invalid")
+
+    def test_cli_without_design_json_is_invalid(self):
+        records = e1_records(perfect, n_tasks=10, n_trials=8)
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            write_run(run, records, design=False)
+            with contextlib.redirect_stdout(io.StringIO()):
+                analysis.main([str(run), "--n-boot", "100"])
+            result = json.loads((run / "analysis.json").read_text(encoding="utf-8"))
+            markdown = (run / "analysis.md").read_text(encoding="utf-8")
+        self.assertEqual(result["status"], "invalid")
+        self.assertNotIn("design_sha256", result)
+        self.assertIn("design.json missing", markdown)
+        self.assertIn("| Records off design.json | no design.json |", markdown)
 
     def test_cli_reports_malformed_input(self):
         with tempfile.TemporaryDirectory() as tmp:

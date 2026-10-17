@@ -23,11 +23,18 @@ E3 replicates draw per-task single-task success rates, a seeded balanced subset 
 the §3.2 P6 bootstrap at B=2 and B=4. E3 is sized on joint H4 power: P6 supported at both breadths in the
 same replicate.
 
-Every power figure is reported with its Monte Carlo standard error, sqrt(p (1 - p) / sims). After the first
-pass, every cell whose target power (see REFINE_TARGETS) is within 2 standard errors of 0.80 is re-simulated
-with at least --refine-sims simulations (default 1,000) and --refine-boot bootstrap resamples (default
-10,000, the production count) before any recommendation uses it. For this rule only, the standard error
-uses the Agresti-Coull adjusted rate (k + 2) / (n + 4), so a cell at 0% or 100% is not treated as exact.
+Every power figure is reported with its Monte Carlo standard error, sqrt(p (1 - p) / sims). Recommendations
+rest only on the power figures in RECOMMENDATION_BASIS (E1 `strong`: P1, P2, P3, P4 supported; E2
+`effective`: P5 supported; E3 `independent`: joint H4 supported); the other scenarios are reported to show
+what the tests do under alternatives and decide nothing. After the first pass, every cell whose basis figure
+is within 2 standard errors of 0.80 is re-simulated with --refine-sims simulations and --refine-boot
+bootstrap resamples before any recommendation uses it. For this rule only, the standard error uses the
+Agresti-Coull adjusted rate (k + 2) / (n + 4), so a cell at 0% or 100% is not treated as exact.
+
+Refinement floors (§3.2 clarifications, power targets): a cell is `refined`, and a near-target cell can
+qualify for a recommendation, only at >= 1,000 simulations and the production 10,000 bootstrap resamples.
+--refine-sims or --refine-boot below the floors makes the whole run exploratory: near-target cells are still
+re-simulated at the requested strength, but are not labelled refined, and the run makes no recommendation.
 
 Scenario rates and gaps are marginal population values on the probability scale: base logits and
 symmetric logit shifts are calibrated by numerical integration over the normal random effects, so averaging
@@ -71,8 +78,10 @@ DESIGN_POOL = 32
 MAX_DRAWS = 100_000
 E3_BUDGET = 90
 TARGET = 0.8
-REFINE_SIMS = 1000
-REFINE_BOOT = N_BOOT
+REFINE_SIMS_FLOOR = 1000  # minimum simulations for a refined cell (§3.2 clarifications)
+REFINE_BOOT_FLOOR = N_BOOT  # the production bootstrap count
+REFINE_SIMS = REFINE_SIMS_FLOOR
+REFINE_BOOT = REFINE_BOOT_FLOOR
 CHUNK = 50  # simulations per worker job; results do not depend on it
 
 # (arbitrary, inferable, preserve) per task, cycled over tasks. The draft bank (T4, 9 tasks) has five tasks
@@ -81,12 +90,14 @@ CHUNK = 50  # simulations per worker job; results do not depend on it
 DRAFT_MIX = ((4, 1, 1), (3, 1, 1), (4, 1, 1), (4, 2, 1), (3, 1, 1), (4, 1, 1))
 LEGACY_MIX = ((2, 3, 1),)  # the structure of the first T5 simulation: 6 decisions, 2 arbitrary
 
-# Which power figure decides each experiment's sizing, and so which cells are refined near 0.80.
-REFINE_TARGETS = {
+# The only power figures recommendations rest on (kind -> scenario -> supported-power keys). recommend() reads
+# nothing else, and exactly these are refined near 0.80; every other scenario is descriptive.
+RECOMMENDATION_BASIS = {
     "e1": {"strong": ("P1", "P2", "P3", "P4")},
     "e2": {"effective": ("P5",)},
     "e3": {"independent": ("H4",)},
 }
+REFINE_TARGETS = RECOMMENDATION_BASIS
 
 
 def logit(p):
@@ -661,6 +672,22 @@ def run_cells(cells, sims, n_boot, seed, workers):
     return out
 
 
+def full_strength(cell):
+    """True when a cell was simulated at the refinement floors (>= 1,000 sims, production bootstrap count)."""
+    return cell["sims"] >= REFINE_SIMS_FLOOR and cell["n_boot"] >= REFINE_BOOT_FLOOR
+
+
+def exploratory_reason(refine_sims, refine_boot):
+    """Why refinement below the floors makes a run exploratory, or None when it meets them."""
+    if refine_sims >= REFINE_SIMS_FLOOR and refine_boot >= REFINE_BOOT_FLOOR:
+        return None
+    return (
+        f"refinement at {refine_sims} simulations and {refine_boot} bootstrap resamples is below the floors "
+        f"({REFINE_SIMS_FLOOR} and {REFINE_BOOT_FLOOR}); near-target cells are not refined and no recommendation "
+        "is made"
+    )
+
+
 def needs_refinement(kind, cell, targets=REFINE_TARGETS):
     """True when a target power of the cell is within 2 standard errors of 0.80."""
     keys = targets.get(kind, {}).get(cell["scenario"], ())
@@ -708,15 +735,17 @@ def run(
     # Refine cells near the target before any recommendation uses them (§3.2 clarifications, power targets).
     near = [i for i, (kind, _, _) in enumerate(cells) if needs_refinement(kind, results[i])]
     refine_sims = max(refine_sims, sims)
+    exploratory = exploratory_reason(refine_sims, refine_boot)
     if sims >= refine_sims and n_boot >= refine_boot:
-        for i in near:  # the first pass already ran at refinement strength
-            results[i]["refined"] = True
+        pass  # the first pass already ran at refinement strength
     elif near and refine_sims > 0:
-        refined = run_cells([cells[i] for i in near], refine_sims, refine_boot, seed, workers)
-        for i, cell in zip(near, refined):
-            cell["refined"] = True
+        rerun = run_cells([cells[i] for i in near], refine_sims, refine_boot, seed, workers)
+        for i, cell in zip(near, rerun):
+            cell["resimulated"] = True
             cell["first_pass"] = {"sims": results[i]["sims"], "n_boot": n_boot, "rates": results[i]["rates"]}
             results[i] = cell
+    for i in near:  # `refined` only at the floors, whatever was requested
+        results[i]["refined"] = full_strength(results[i])
     by_kind = {kind: [r for (k, _, _), r in zip(cells, results) if k == kind] for kind in ("e1", "e2", "e3")}
     for kind in ("e2", "e3"):
         if kind == "e3":
@@ -733,24 +762,26 @@ def run(
         "refine_sims": refine_sims,
         "refine_boot": refine_boot,
         "target_power": TARGET,
+        "exploratory": exploratory is not None,
+        "exploratory_reason": exploratory,
+        "recommendation_basis": {k: {s: list(v) for s, v in b.items()} for k, b in RECOMMENDATION_BASIS.items()},
         "e1_scenarios": [asdict(s) for s in e1_scenarios],
         "e2_scenarios": by_kind["e2_scenarios"],
         "e3_scenarios": by_kind["e3_scenarios"],
         "e1": by_kind["e1"],
         "e2": by_kind["e2"],
         "e3": by_kind["e3"],
-        "recommendation": recommend(by_kind["e1"], by_kind["e2"], by_kind["e3"], refine_sims, refine_boot),
+        "recommendation": None if exploratory else recommend(by_kind["e1"], by_kind["e2"], by_kind["e3"]),
     }
 
 
-def smallest(cells, key, target, refine_sims, refine_boot):
+def smallest(cells, key, target):
     """The cell with the fewest total trials whose `key` power reaches the target, ties to more tasks. A cell
-    within 2 SE of the target qualifies only after refinement at full strength."""
+    within 2 SE of the target qualifies only at the refinement floors (full_strength)."""
     ok = []
     for c in cells:
         k, n = c["counts"][key]["supported"], c["sims"]
-        refined = n >= refine_sims and c["n_boot"] >= refine_boot
-        if k / n >= target and (refined or not near_target(k, n, target)):
+        if k / n >= target and (full_strength(c) or not near_target(k, n, target)):
             ok.append(c)
     pick = min(ok, key=lambda c: (c["total_trials"], -c["tasks"]), default=None)
     if pick is None:
@@ -766,10 +797,14 @@ def smallest(cells, key, target, refine_sims, refine_boot):
     }
 
 
-def recommend(e1, e2, e3, refine_sims=REFINE_SIMS, refine_boot=REFINE_BOOT, target=TARGET):
+def recommend(e1, e2, e3, target=TARGET):
     """D7: the smallest E1 total with P(P1 supported | strong) >= target; E2: the smallest with
     P(P5 supported | effective) >= target; E3: the smallest total with joint H4 power (P6 supported at both
-    breadths in one replicate) >= target under independence, within the E3 budget and without it."""
+    breadths in one replicate) >= target under independence, within the E3 budget and without it. Only the
+    RECOMMENDATION_BASIS scenarios and keys are read."""
+    (e1_name, e1_keys), (e2_name, (e2_key,)), (e3_name, (e3_key,)) = (
+        next(iter(RECOMMENDATION_BASIS[kind].items())) for kind in ("e1", "e2", "e3")
+    )
 
     def of(cells, scenario):
         return [c for c in cells if c["scenario"] == scenario]
@@ -781,20 +816,16 @@ def recommend(e1, e2, e3, refine_sims=REFINE_SIMS, refine_boot=REFINE_BOOT, targ
             if all(c[k] == v for k, v in design.items())
         } or None
 
-    indep = of(e3, "independent")
+    indep = of(e3, e3_name)
     return {
         "target_power": target,
-        "e1": smallest(of(e1, "strong"), "P1", target, refine_sims, refine_boot),
-        "e1_planned_power": at(e1, tasks=12, trials_per_task=16),
-        "e1_p2_p3_p4": {
-            key: smallest(of(e1, "strong"), key, target, refine_sims, refine_boot) for key in ("P2", "P3", "P4")
-        },
-        "e2": smallest(of(e2, "effective"), "P5", target, refine_sims, refine_boot),
-        "e2_planned_power": at(e2, tasks=12, trials_per_arm=4),
-        "e3_within_budget": smallest(
-            [c for c in indep if c["total_trials"] <= E3_BUDGET], "H4", target, refine_sims, refine_boot
-        ),
-        "e3_any": smallest(indep, "H4", target, refine_sims, refine_boot),
+        "e1": smallest(of(e1, e1_name), e1_keys[0], target),
+        "e1_planned_power": at(of(e1, e1_name), tasks=12, trials_per_task=16),
+        "e1_p2_p3_p4": {key: smallest(of(e1, e1_name), key, target) for key in e1_keys[1:]},
+        "e2": smallest(of(e2, e2_name), e2_key, target),
+        "e2_planned_power": at(of(e2, e2_name), tasks=12, trials_per_arm=4),
+        "e3_within_budget": smallest([c for c in indep if c["total_trials"] <= E3_BUDGET], e3_key, target),
+        "e3_any": smallest(indep, e3_key, target),
         "e3_best_within_budget": max(
             (
                 {
@@ -802,8 +833,8 @@ def recommend(e1, e2, e3, refine_sims=REFINE_SIMS, refine_boot=REFINE_BOOT, targ
                     "single_per_task": c["single_per_task"],
                     "trials_per_breadth": c["trials_per_breadth"],
                     "total_trials": c["total_trials"],
-                    "power": c["rates"]["H4"]["supported"],
-                    "se": c["se"]["H4"]["supported"],
+                    "power": c["rates"][e3_key]["supported"],
+                    "se": c["se"][e3_key]["supported"],
                     "sims": c["sims"],
                 }
                 for c in indep
@@ -848,7 +879,7 @@ def _cell(c, key):
 
 
 def _strength(c):
-    return f"{c['sims']}{'*' if c['refined'] else ''}"
+    return f"{c['sims']}{'*' if c['refined'] else '†' if c.get('resimulated') else ''}"
 
 
 def _mix_text(mix):
@@ -856,12 +887,23 @@ def _mix_text(mix):
 
 
 def to_markdown(result):
+    basis = "; ".join(
+        f"{kind.upper()} {scenario}: {', '.join(keys)}"
+        for kind, scenarios in result["recommendation_basis"].items()
+        for scenario, keys in scenarios.items()
+    )
     lines = [
         f"Power simulation, seed {result['seed']}: {result['sims']} simulations per cell with {result['n_boot']} "
-        f"bootstrap resamples; cells within 2 SE of {100 * result['target_power']:.0f}% on their target were "
-        f"re-simulated with {result['refine_sims']} simulations and {result['refine_boot']} resamples (marked * "
-        "in the Sims column). Cells show % supported ± 1 Monte Carlo SE / % falsified ± 1 SE.",
+        f"bootstrap resamples; cells within 2 SE of {100 * result['target_power']:.0f}% on a recommendation-basis "
+        f"figure were re-simulated with {result['refine_sims']} simulations and {result['refine_boot']} resamples "
+        f"(marked * in the Sims column when at the {REFINE_SIMS_FLOOR}-simulation, {REFINE_BOOT_FLOOR}-resample "
+        "floors, † when below them). Cells show % supported ± 1 Monte Carlo SE / % falsified ± 1 SE.",
+        "",
+        f"Recommendations rest only on supported power for: {basis}. Cells near the target on these figures are "
+        "refined before use; the other scenarios are descriptive and are not refined.",
     ]
+    if result["exploratory"]:
+        lines += ["", f"**Exploratory run**: {result['exploratory_reason']}."]
     if result["e1"]:
         lines += [
             "",
@@ -943,7 +985,10 @@ def to_markdown(result):
                 f"| {c['scenario']} | {c['tasks']} | {c['single_per_task']} | {c['trials_per_breadth']} | "
                 f"{c['total_trials']} | {_strength(c)} | {cells} |"
             )
-    lines += recommendation_lines(result["recommendation"])
+    if result["recommendation"] is not None:
+        lines += recommendation_lines(result["recommendation"])
+    else:
+        lines += ["", "No recommendation: exploratory run (refinement below the floors)."]
     return "\n".join(lines) + "\n"
 
 
@@ -1010,10 +1055,16 @@ def main(argv=None):
     parser.add_argument("--json", default=None, help="also write the full result as JSON to this path")
     parser.add_argument("--only", default="e1,e2,e3", help="experiments to simulate (default e1,e2,e3)")
     parser.add_argument(
-        "--refine-sims", type=int, default=REFINE_SIMS, help=f"simulations for near-target cells ({REFINE_SIMS})"
+        "--refine-sims",
+        type=int,
+        default=REFINE_SIMS,
+        help=f"simulations for near-target cells ({REFINE_SIMS}; below {REFINE_SIMS_FLOOR} the run is exploratory)",
     )
     parser.add_argument(
-        "--refine-boot", type=int, default=REFINE_BOOT, help=f"resamples for near-target cells ({REFINE_BOOT})"
+        "--refine-boot",
+        type=int,
+        default=REFINE_BOOT,
+        help=f"resamples for near-target cells ({REFINE_BOOT}; below {REFINE_BOOT_FLOOR} the run is exploratory)",
     )
     for name, default in (
         ("e1-tasks", E1_TASKS),

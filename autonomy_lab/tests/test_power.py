@@ -219,13 +219,14 @@ class RefinementTests(unittest.TestCase):
         self.assertGreaterEqual(power.REFINE_SIMS, 1000)
         self.assertEqual(power.REFINE_BOOT, N_BOOT)
         self.assertEqual(N_BOOT, 10_000)
+        self.assertEqual((power.REFINE_SIMS_FLOOR, power.REFINE_BOOT_FLOOR), (1000, 10_000))
         params = inspect.signature(power.run).parameters
         self.assertEqual(params["refine_sims"].default, power.REFINE_SIMS)
         self.assertEqual(params["refine_boot"].default, power.REFINE_BOOT)
 
-    def test_near_cells_are_refined_before_recommending(self):
+    def refine_run(self):
         with mock.patch.object(power, "needs_refinement", lambda kind, cell: cell["scenario"] == "strong"):
-            result = power.run(
+            return power.run(
                 sims=3,
                 n_boot=100,
                 jobs=1,
@@ -237,13 +238,43 @@ class RefinementTests(unittest.TestCase):
                 refine_sims=7,
                 refine_boot=150,
             )
+
+    def test_near_cells_are_refined_before_recommending(self):
+        with mock.patch.multiple(power, REFINE_SIMS_FLOOR=7, REFINE_BOOT_FLOOR=150):
+            result = self.refine_run()
         strong, legacy = result["e1"]
         self.assertTrue(strong["refined"])
         self.assertEqual((strong["sims"], strong["n_boot"]), (7, 150))
         self.assertEqual(strong["first_pass"]["sims"], 3)
         self.assertFalse(legacy["refined"])
         self.assertEqual(legacy["sims"], 3)
+        self.assertFalse(result["exploratory"])
+        self.assertIsNotNone(result["recommendation"])
         self.assertIn("7*", power.to_markdown(result))
+
+    def test_refinement_below_the_floors_is_exploratory(self):
+        # Regression (T5 round-2 review, finding 4): --refine-sims 7 --refine-boot 150 produced `refined` cells
+        # and a recommendation. Below 1,000 sims or 10,000 resamples the cells are re-simulated but not refined,
+        # and the run makes no recommendation.
+        result = self.refine_run()
+        strong, legacy = result["e1"]
+        self.assertTrue(strong["resimulated"])
+        self.assertEqual((strong["sims"], strong["n_boot"]), (7, 150))
+        self.assertFalse(strong["refined"])
+        self.assertFalse(legacy["refined"])
+        self.assertTrue(result["exploratory"])
+        self.assertIn("below the floors", result["exploratory_reason"])
+        self.assertIsNone(result["recommendation"])
+        markdown = power.to_markdown(result)
+        self.assertIn("7†", markdown)
+        self.assertNotIn("7*", markdown)
+        self.assertIn("**Exploratory run**", markdown)
+        self.assertIn("No recommendation: exploratory run", markdown)
+        self.assertNotIn("smallest qualifying cell", markdown)
+        # Each floor on its own makes a run exploratory.
+        self.assertIsNotNone(power.exploratory_reason(999, N_BOOT))
+        self.assertIsNotNone(power.exploratory_reason(1000, N_BOOT - 1))
+        self.assertIsNone(power.exploratory_reason(1000, N_BOOT))
 
     def test_full_strength_first_pass_is_not_rerun(self):
         calls = []
@@ -256,6 +287,7 @@ class RefinementTests(unittest.TestCase):
         with (
             mock.patch.object(power, "needs_refinement", lambda kind, cell: True),
             mock.patch.object(power, "run_cells", counting),
+            mock.patch.multiple(power, REFINE_SIMS_FLOOR=4, REFINE_BOOT_FLOOR=100),
         ):
             result = power.run(
                 sims=4,
@@ -274,13 +306,53 @@ class RefinementTests(unittest.TestCase):
     def test_unrefined_near_target_cell_is_not_recommended(self):
         near = fake_cell("strong", 80, 10, {"P1": 170}, sims=200, n_boot=1000, trials_per_task=8)
         clear = fake_cell("strong", 192, 12, {"P1": 990}, trials_per_task=16)
-        pick = power.smallest([near, clear], "P1", 0.8, 1000, N_BOOT)
+        pick = power.smallest([near, clear], "P1", 0.8)
         assert pick is not None
         self.assertEqual(pick["total_trials"], 192)
         refined = fake_cell("strong", 80, 10, {"P1": 850}, trials_per_task=8)
-        pick = power.smallest([refined, clear], "P1", 0.8, 1000, N_BOOT)
+        pick = power.smallest([refined, clear], "P1", 0.8)
         assert pick is not None
         self.assertEqual(pick["total_trials"], 80)
+        # Near-target cells just below either floor do not qualify, whatever the run requested.
+        for sims, n_boot in ((999, N_BOOT), (1000, N_BOOT - 1), (4000, 1000)):
+            weak = fake_cell("strong", 80, 10, {"P1": round(0.81 * sims)}, sims=sims, n_boot=n_boot, trials_per_task=8)
+            self.assertTrue(power.near_target(weak["counts"]["P1"]["supported"], sims))
+            self.assertEqual(power.smallest([weak, clear], "P1", 0.8)["total_trials"], 192, (sims, n_boot))
+
+    def test_recommendations_rest_only_on_the_stated_basis(self):
+        # Regression (T5 round-2 review, finding 4): recommendations must rest only on figures that are refined.
+        self.assertIs(power.REFINE_TARGETS, power.RECOMMENDATION_BASIS)
+        self.assertEqual(
+            power.RECOMMENDATION_BASIS,
+            {"e1": {"strong": ("P1", "P2", "P3", "P4")}, "e2": {"effective": ("P5",)}, "e3": {"independent": ("H4",)}},
+        )
+        keys = {"P1": 990, "P2": 990, "P3": 990, "P4": 990}
+        e1 = [
+            fake_cell("moderate", 80, 10, keys, trials_per_task=8),  # high power, but not a basis scenario
+            fake_cell("strong", 192, 12, keys, trials_per_task=16),
+        ]
+        e2 = [
+            fake_cell("no-effect", 80, 10, {"P5": 990}, trials_per_arm=4),
+            fake_cell("effective", 96, 12, {"P5": 990}, trials_per_arm=4),
+        ]
+        e3 = [
+            fake_cell("shared-trial", 60, 6, {"H4": 990}, single_per_task=4, trials_per_breadth=18),
+            fake_cell("independent", 72, 6, {"H4": 990}, single_per_task=4, trials_per_breadth=24),
+        ]
+        rec = power.recommend(e1, e2, e3)
+        self.assertEqual(rec["e1"]["total_trials"], 192)
+        self.assertEqual(
+            {k: v["total_trials"] for k, v in rec["e1_p2_p3_p4"].items()}, dict.fromkeys(keys.keys() - {"P1"}, 192)
+        )
+        self.assertEqual(rec["e2"]["total_trials"], 96)
+        self.assertEqual(rec["e3_any"]["total_trials"], 72)
+        self.assertEqual(rec["e3_best_within_budget"]["total_trials"], 72)
+
+    def test_refinement_covers_every_basis_figure(self):
+        cell = fake_cell("strong", 80, 10, {"P1": 198, "P2": 198, "P3": 198, "P4": 162}, sims=200, trials_per_task=8)
+        self.assertTrue(power.needs_refinement("e1", cell))
+        other = fake_cell("moderate", 80, 10, {"P1": 160}, sims=200, trials_per_task=8)
+        self.assertFalse(power.needs_refinement("e1", other))  # descriptive scenario: reported, never refined
 
     def test_e3_is_sized_on_joint_h4_power(self):
         # Regression (T5 review, finding 7): both breadths at 85% marginal power give only ~72% joint power.
@@ -321,8 +393,14 @@ class RunTests(unittest.TestCase):
         first = self.small_run()
         second = self.small_run()
         self.assertEqual(json.dumps(first, sort_keys=True), json.dumps(second, sort_keys=True))
-        self.assertIn("e1", first["recommendation"])
+        self.assertTrue(first["exploratory"])
+        self.assertIsNone(first["recommendation"])
+        with mock.patch.multiple(power, REFINE_SIMS_FLOOR=4, REFINE_BOOT_FLOOR=100):
+            floored = self.small_run()
+        self.assertIn("e1", floored["recommendation"])
+        self.assertIn("Recommendation (target power", power.to_markdown(floored))
         markdown = power.to_markdown(first)
+        self.assertIn("Recommendations rest only on supported power for: E1 strong: P1, P2, P3, P4", markdown)
         self.assertIn("| strong | 10 | 8 | 80 |", markdown)
         self.assertIn("| effective | 10 | 4 | 80 |", markdown)
         self.assertIn("H4 (joint)", markdown)
@@ -341,7 +419,8 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(result["e1"]), len(power.E1_SCENARIOS))
         self.assertEqual(len(result["e2"]), len(power.E2_SCENARIOS))
         self.assertEqual(len(result["e3"]), len(power.E3_SCENARIOS))
-        self.assertIn("Recommendation", out.getvalue())
+        self.assertTrue(result["exploratory"])
+        self.assertIn("No recommendation: exploratory run", out.getvalue())
 
     def test_cli_rejects_unknown_experiment(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
