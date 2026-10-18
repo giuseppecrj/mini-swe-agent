@@ -152,9 +152,9 @@
   },
   "loop": {
     "gate": "G1 approved",
-    "current_stage": "labels of 9 tasks approved; drafting 3 more coordinator tasks; T8 calibration on the 9 approved tasks",
+    "current_stage": "T8 passed on 9 tasks; tasks 10-12 drafted, cross-family audit running; then blind label approval, T8 for 10-12, freeze, E1",
     "budget_used": {
-      "benchmark_trials": 8,
+      "benchmark_trials": 35,
       "review_sessions": 15,
       "aux_calls": 52,
       "provider_reported_usd": {
@@ -200,6 +200,15 @@
       "rubric_sha256": "67708d42fbadab4235767b5ce9efff82e73668294df5d0359be30900c69c9cb9",
       "selftest_prompt_digest": "7741dfa0738c80a32eda4a3c777445118cb14bf101e9455f0bb88e91e5cf1e11"
     },
-    "budget_policy": "G4 2026-10-18: subscription (OAuth) usage, dollars informational; caps are trial counts (T8 36, E1 192 now; E2 288 after G3) and provider usage limits"
+    "budget_policy": "G4 2026-10-18: subscription (OAuth) usage, dollars informational; caps are trial counts (T8 36, E1 192 now; E2 288 after G3) and provider usage limits",
+    "t8_partial": {
+      "run": "run-20261018T174639Z-d25f05 (local, outside repo)",
+      "bank": "9 approved tasks, sha256 b40c40e7…",
+      "trials": 27,
+      "gate_unsettled_arbitrary": "20/60 = 0.33 (pass, 0.05-0.80)",
+      "gate_all_contract": "50/50 = 1.00 (pass, >=0.80)",
+      "validity": "0 infrastructure, 0 runtime mismatches, 0 integrity failures, 0 confinement signals",
+      "note": "calibration only; excluded from all analyses; tasks 10-12 get their T8 trials after approval"
+    }
   }
 }
