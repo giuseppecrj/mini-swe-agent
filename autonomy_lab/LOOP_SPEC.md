@@ -163,6 +163,12 @@ H4 is supported only if P6 is supported at both breadths. It is falsified if P6 
 - **P5 completeness.** Every eligible decision must be judged. If any are unjudged, or κ is missing, non-finite or below 0.6, P5 is inconclusive.
 - **Power targets (T5).** Every power figure is reported with its Monte Carlo standard error. Figures that a sample-size recommendation rests on (the declared recommendation basis: E1 strong-scenario P1–P4, E2 P5, E3 joint H4 under independence) are re-simulated with at least 1,000 simulations and the production bootstrap count whenever they fall within 2 standard errors of 80%. Other scenarios are descriptive, labelled unrefined, and never used for sizing. E3 is sized on joint H4 power, not on each breadth separately. P5 power is simulated too.
 
+**User decisions at G2 (2026-10-18):**
+
+- **P3 and P4 are descriptive in E1.** Estimates, strata and CIs are reported without a verdict, because the T5 power simulation puts their support probability near 1% at any affordable size.
+- **The T6 judge uses minimal redaction.** Only a verbatim quotation of the E2 `assume` instruction is removed. Instruction-origin residue such as "you asked me to list assumptions" stays visible to the judge, and that is a stated limitation of P5.
+- **The post-round-3 task-bank patch `8e08636` is kept.**
+
 **Authorship (descriptive only):** if you author any tasks (D3), P1's per-task effects are also reported separately for your tasks and the coordinator's. With so few tasks, no test is run.
 
 ### 3.3 Guardrails
