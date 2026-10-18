@@ -164,6 +164,9 @@ class ProfileTests(unittest.TestCase):
             ("socket unix stream", AUDIT_ARCH_X86_64, 41, (AF_UNIX, STREAM), eperm),
             ("socket unix dgram", AUDIT_ARCH_X86_64, 41, (AF_UNIX, DGRAM | CLOEXEC), eperm),
             ("socket unix, high bits", AUDIT_ARCH_X86_64, 41, ((1 << 32) | AF_UNIX, STREAM), eperm),
+            # AF_VSOCK reaches host-local listeners even from an unshared network namespace (VMADDR_CID_LOCAL).
+            ("socket vsock stream", AUDIT_ARCH_X86_64, 41, (40, STREAM), eperm),
+            ("socket vsock dgram, cloexec", AUDIT_ARCH_X86_64, 41, (40, DGRAM | CLOEXEC), eperm),
             ("socket inet", AUDIT_ARCH_X86_64, 41, (AF_INET, STREAM), SECCOMP_RET_ALLOW),
             ("socket inet6 dgram", AUDIT_ARCH_X86_64, 41, (AF_INET6, DGRAM), SECCOMP_RET_ALLOW),
             # socketpair(): a stream pair is connected for good; any other Unix pair can connect() elsewhere.

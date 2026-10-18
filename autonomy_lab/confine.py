@@ -107,6 +107,8 @@ SECCOMP_RET_ERRNO = 0x00050000
 SECCOMP_RET_ALLOW = 0x7FFF0000
 EPERM = 1
 AF_UNIX = 1
+# Host-local virtual sockets bypass a network namespace (VMADDR_CID_LOCAL), so they are refused like AF_UNIX.
+AF_VSOCK = 40
 SOCK_STREAM = 1
 # The socket type without the SOCK_NONBLOCK and SOCK_CLOEXEC flags the type argument may carry.
 SOCK_TYPE_MASK = 0xF
@@ -128,7 +130,7 @@ def seccomp_program():
     """Assemble the profile's classic-BPF seccomp program as a ``struct sock_filter`` array for ``--seccomp``.
 
     Kills anything that is not the x86_64 ABI (including x32, which renumbers syscalls), returns ``EPERM`` for
-    ``socket()`` with ``AF_UNIX``, for ``socketpair()`` with ``AF_UNIX`` unless the type is ``SOCK_STREAM`` (flags
+    ``socket()`` with ``AF_UNIX`` or ``AF_VSOCK``, for ``socketpair()`` with ``AF_UNIX`` unless the type is ``SOCK_STREAM`` (flags
     aside), and for the ``io_uring`` syscalls, and allows everything else. ``pipe()`` is a different syscall and keeps
     working, as do the stream socketpairs that subprocess plumbing relies on.
     """
@@ -152,7 +154,8 @@ def seccomp_program():
     emit(BPF_RET_K, SECCOMP_RET_ALLOW)
     labels["unix_domain"] = len(code)
     emit(BPF_LD_W_ABS, SECCOMP_DATA_ARG0)
-    emit(BPF_JEQ_K, AF_UNIX, jt="deny", jf="allow")
+    emit(BPF_JEQ_K, AF_UNIX, jt="deny")
+    emit(BPF_JEQ_K, AF_VSOCK, jt="deny", jf="allow")
     labels["unix_pair"] = len(code)
     emit(BPF_LD_W_ABS, SECCOMP_DATA_ARG0)
     emit(BPF_JEQ_K, AF_UNIX, jf="allow")

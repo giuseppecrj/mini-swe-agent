@@ -39,7 +39,6 @@ from autonomy_lab.confine import (
     ConfinementError,
     GradingSandbox,
     bwrap_unavailable_reason,
-    sandbox_setup_failed,
 )
 from autonomy_lab.design import build_visible_checks, filler_feasibility_errors
 
@@ -441,8 +440,15 @@ def run_check(module, module_source, source, timeout=CHECK_TIMEOUT, sandbox=None
     exit_code = None if timed_out else process.returncode
     started_ok = ready in out_lines
     sandbox_error = None
-    if sandbox is not None and not started_ok and not timed_out and sandbox_setup_failed(exit_code, err_text):
-        sandbox_error = err_text.strip()[-300:]
+    if sandbox is not None and not started_ok:
+        # The ready marker is flushed before any check or candidate code runs, so a check that never printed it
+        # failed inside the sandbox (setup error, kill, hang), whatever its stderr says: never a candidate failure.
+        if timed_out:
+            reason = "timed out before the check started"
+        else:
+            reason = f"exited with status {exit_code} before the check started"
+        detail = err_text.strip()[-300:]
+        sandbox_error = f"{reason}: {detail}" if detail else reason
     shown = [line for line in out_lines if line not in (ready, token)]
     tail = ("\n".join(shown) + ("\n" if shown and err_text else "") + err_text)[-1200:]
     passed = exit_code == 0 and started_ok and token in out_lines

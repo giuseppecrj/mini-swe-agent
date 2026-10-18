@@ -620,6 +620,30 @@ class GradingTests(unittest.TestCase):
         self.assertIsNone(forged["sandbox_error"])
         self.assertFalse(forged["passed"])
 
+    def test_a_sandbox_that_dies_or_hangs_before_the_check_starts_is_not_a_candidate_failure(self):
+        # Final security review: only a 'bwrap: ' stderr counted, so a kill, a hang or a silent exit before the
+        # ready marker was scored as heldout_failed against the condition instead of an infrastructure failure.
+        deaths = {
+            "silent exit": "import sys\nsys.exit(1)\n",
+            "killed": "import os, signal\nos.kill(os.getpid(), signal.SIGSYS)\n",
+            "hang": "import time\ntime.sleep(30)\n",
+        }
+        for name, script in deaths.items():
+
+            class DyingSandbox:
+                interpreter = sys.executable
+
+                def wrap(self, command, check_dir, script=script):
+                    return [sys.executable, "-c", script], dict(os.environ)
+
+            with self.subTest(name):
+                outcome = run_check("m.py", "", "pass\n", timeout=1, sandbox=DyingSandbox())
+                self.assertFalse(outcome["passed"])
+                self.assertIn("before the check started", outcome["sandbox_error"] or "", outcome)
+                modules = {"slugify": (self.slug["reference"].encode(), None)}
+                with self.assertRaisesRegex(GradingError, "grading sandbox failed"):
+                    grade_modules(modules, [self.slug], sandbox=DyingSandbox(), timeout=1)
+
 
 @unittest.skipIf(BWRAP_REASON, f"bwrap unavailable: {BWRAP_REASON}")
 class GradingSandboxTests(unittest.TestCase):
