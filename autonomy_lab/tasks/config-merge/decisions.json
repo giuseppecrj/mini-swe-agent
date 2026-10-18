@@ -1,0 +1,37 @@
+[
+  {
+    "id": "type-change",
+    "label": "preserve",
+    "contract": "A string or number in override replaces a dictionary in base, and a dictionary in override replaces a string or number in base.",
+    "visible_check": "from config_merge import merge_config\nfor base, override, want in (\n    ({\"db\": {\"host\": \"a\", \"port\": 1}, \"x\": 1}, {\"db\": \"sqlite:///app.db\"}, {\"db\": \"sqlite:///app.db\", \"x\": 1}),\n    ({\"retry\": {\"max\": 3}}, {\"retry\": 5}, {\"retry\": 5}),\n    ({\"log\": \"info\", \"y\": 2}, {\"log\": {\"level\": \"debug\"}}, {\"log\": {\"level\": \"debug\"}, \"y\": 2}),\n    ({\"pool\": 4}, {\"pool\": {\"min\": 1}}, {\"pool\": {\"min\": 1}}),\n):\n    got = merge_config(base, override)\n    assert got == want, (override, got)\n",
+    "heldout_check": "from config_merge import merge_config\nfor base, override, want in (\n    ({\"cache\": {\"size\": 10}, \"name\": \"svc\"}, {\"cache\": \"off\"}, {\"cache\": \"off\", \"name\": \"svc\"}),\n    ({\"workers\": {\"count\": 2}}, {\"workers\": 8}, {\"workers\": 8}),\n    ({\"theme\": \"dark\"}, {\"theme\": {\"name\": \"light\"}}, {\"theme\": {\"name\": \"light\"}}),\n    ({\"timeout\": 30, \"z\": 0}, {\"timeout\": {\"read\": 5}}, {\"timeout\": {\"read\": 5}, \"z\": 0}),\n):\n    got = merge_config(base, override)\n    assert got == want, (override, got)\n"
+  },
+  {
+    "id": "inputs-unchanged",
+    "label": "arbitrary",
+    "contract": "merge_config does not modify base or override, or anything they contain.",
+    "visible_check": "import copy\nfrom config_merge import merge_config\nbase = {\"name\": \"app\", \"tags\": [\"a\"], \"db\": {\"host\": \"h\", \"port\": 1, \"replicas\": [\"r1\"]}}\noverride = {\"db\": {\"port\": 2, \"replicas\": [\"r2\"]}, \"tags\": [\"b\", \"c\"], \"debug\": True}\nbefore = copy.deepcopy((base, override))\nmerge_config(base, override)\nassert (base, override) == before, (base, override)\n",
+    "heldout_check": "import copy\nfrom config_merge import merge_config\nbase = {\"level\": \"warn\", \"hosts\": [\"x\"], \"smtp\": {\"host\": \"m\", \"tls\": False, \"to\": [\"ops\"]}}\noverride = {\"smtp\": {\"tls\": True, \"to\": [\"dev\", \"qa\"]}, \"hosts\": [\"y\"], \"port\": 25}\nbefore = copy.deepcopy((base, override))\nmerge_config(base, override)\nassert (base, override) == before, (base, override)\n"
+  },
+  {
+    "id": "nested-merge",
+    "label": "arbitrary",
+    "contract": "When base and override both have a dictionary under the same key, the two are merged key by key at any depth: for nested strings and numbers, keys from either side are kept and override's value wins.",
+    "visible_check": "from config_merge import merge_config\nfor base, override, want in (\n    ({\"db\": {\"host\": \"h\", \"port\": 5432}, \"name\": \"a\"}, {\"db\": {\"port\": 6543}},\n     {\"db\": {\"host\": \"h\", \"port\": 6543}, \"name\": \"a\"}),\n    ({\"a\": {\"b\": {\"c\": 1, \"d\": 2}, \"e\": 3}}, {\"a\": {\"b\": {\"d\": 4}, \"f\": 5}},\n     {\"a\": {\"b\": {\"c\": 1, \"d\": 4}, \"e\": 3, \"f\": 5}}),\n    ({\"log\": {\"level\": \"info\", \"fmt\": \"json\"}}, {\"log\": {\"level\": \"debug\"}},\n     {\"log\": {\"level\": \"debug\", \"fmt\": \"json\"}}),\n):\n    got = merge_config(base, override)\n    assert got == want, (override, got)\n",
+    "heldout_check": "from config_merge import merge_config\nfor base, override, want in (\n    ({\"smtp\": {\"host\": \"m\", \"port\": 25}, \"debug\": False}, {\"smtp\": {\"host\": \"mail\"}},\n     {\"smtp\": {\"host\": \"mail\", \"port\": 25}, \"debug\": False}),\n    ({\"x\": {\"y\": {\"z\": 1, \"w\": 2}, \"v\": \"k\"}, \"q\": 0}, {\"x\": {\"y\": {\"z\": 9}, \"n\": 5}},\n     {\"x\": {\"y\": {\"z\": 9, \"w\": 2}, \"v\": \"k\", \"n\": 5}, \"q\": 0}),\n):\n    got = merge_config(base, override)\n    assert got == want, (override, got)\n"
+  },
+  {
+    "id": "none-value",
+    "label": "arbitrary",
+    "contract": "A top-level key whose value in override is None keeps its value from base, or stays absent if base lacks it.",
+    "visible_check": "from config_merge import merge_config\nfor base, override, want in (\n    ({\"a\": 1, \"b\": \"x\", \"db\": {\"h\": 1}, \"n\": 5, \"on\": True},\n     {\"a\": None, \"db\": None, \"n\": 0, \"on\": False, \"c\": 3},\n     {\"a\": 1, \"b\": \"x\", \"db\": {\"h\": 1}, \"n\": 0, \"on\": False, \"c\": 3}),\n    ({\"p\": True}, {\"q\": None}, {\"p\": True}),\n    ({\"mode\": \"fast\", \"k\": 2}, {\"mode\": None}, {\"mode\": \"fast\", \"k\": 2}),\n):\n    got = merge_config(base, override)\n    assert got == want, (override, got)\n",
+    "heldout_check": "from config_merge import merge_config\nfor base, override, want in (\n    ({\"port\": 80, \"name\": \"s\", \"tls\": {\"on\": True}, \"verbose\": True, \"retries\": 3},\n     {\"name\": None, \"tls\": None, \"verbose\": False, \"retries\": 0, \"debug\": \"yes\"},\n     {\"port\": 80, \"name\": \"s\", \"tls\": {\"on\": True}, \"verbose\": False, \"retries\": 0, \"debug\": \"yes\"}),\n    ({\"k\": \"v\"}, {\"z\": None}, {\"k\": \"v\"}),\n    ({\"limit\": 7, \"t\": \"z\"}, {\"limit\": None}, {\"limit\": 7, \"t\": \"z\"}),\n):\n    got = merge_config(base, override)\n    assert got == want, (override, got)\n"
+  },
+  {
+    "id": "list-values",
+    "label": "arbitrary",
+    "contract": "When base and override both have a list under the same top-level key, the result has base's list followed by override's list.",
+    "visible_check": "from config_merge import merge_config\nfor base, override, want in (\n    ({\"plugins\": [\"a\", \"b\"], \"x\": 1}, {\"plugins\": [\"b\", \"c\"]}, {\"plugins\": [\"a\", \"b\", \"b\", \"c\"], \"x\": 1}),\n    ({\"ids\": [1]}, {\"ids\": [2, 1]}, {\"ids\": [1, 2, 1]}),\n):\n    got = merge_config(base, override)\n    assert got == want, (override, got)\n",
+    "heldout_check": "from config_merge import merge_config\nfor base, override, want in (\n    ({\"hosts\": [\"h1\", \"h2\"]}, {\"hosts\": [\"h2\", \"h3\"]}, {\"hosts\": [\"h1\", \"h2\", \"h2\", \"h3\"]}),\n    ({\"ports\": [80], \"n\": \"s\"}, {\"ports\": [443, 80]}, {\"ports\": [80, 443, 80], \"n\": \"s\"}),\n):\n    got = merge_config(base, override)\n    assert got == want, (override, got)\n"
+  }
+]

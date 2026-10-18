@@ -1,0 +1,7 @@
+{
+  "id": "config-merge",
+  "module": "config_merge.py",
+  "brief": "merge_config() needs a correctness pass",
+  "version": 1,
+  "author": "coordinator"
+}

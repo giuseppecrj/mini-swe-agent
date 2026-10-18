@@ -1,0 +1,44 @@
+[
+  {
+    "id": "first-delay",
+    "label": "arbitrary",
+    "contract": "The first delay is base itself; the multiplier first applies to the second delay.",
+    "visible_check": "from retries import retry_delays\nfor args, want in (((3, 2, 3, 100), [2, 6, 18]), ((4, 0.5, 2, 60), [0.5, 1, 2, 4])):\n    got = retry_delays(*args)\n    assert got == want, (args, got)\n",
+    "heldout_check": "from retries import retry_delays\nfor args, want in (((3, 5, 2, 1000), [5, 10, 20]), ((4, 0.25, 4, 500), [0.25, 1, 4, 16])):\n    got = retry_delays(*args)\n    assert got == want, (args, got)\n"
+  },
+  {
+    "id": "cap-clamps",
+    "label": "preserve",
+    "contract": "A later delay that would grow past max_delay equals max_delay instead.",
+    "visible_check": "from retries import retry_delays\nfor args in ((8, 1, 2, 10), (7, 1.5, 3, 20)):\n    got = retry_delays(*args)\n    cap = args[3]\n    assert max(got) == cap and got[-1] == cap, (args, got)\n",
+    "heldout_check": "from retries import retry_delays\nfor args in ((8, 3, 2, 40), (6, 0.5, 4, 25)):\n    got = retry_delays(*args)\n    cap = args[3]\n    assert max(got) == cap and got[-1] == cap, (args, got)\n"
+  },
+  {
+    "id": "long-schedule",
+    "label": "inferable",
+    "contract": "With valid arguments, a schedule of thousands of retries returns all of its delays without an overflow error.",
+    "visible_check": "from retries import retry_delays\nfor args in ((1200, 1, 2.0, 30), (1100, 0.5, 2, 60)):\n    got = retry_delays(*args)\n    assert len(got) == args[0] and max(got) <= args[3] and got[-1] == got[-2] > 0, (args, got[-3:])\n",
+    "heldout_check": "from retries import retry_delays\nfor args in ((2000, 3, 1.5, 120), (1300, 0.25, 3, 45)):\n    got = retry_delays(*args)\n    assert len(got) == args[0] and max(got) <= args[3] and got[-1] == got[-2] > 0, (args, got[-3:])\n"
+  },
+  {
+    "id": "base-above-cap",
+    "label": "arbitrary",
+    "contract": "A base larger than max_delay raises ValueError.",
+    "visible_check": "from retries import retry_delays\nfor args in ((3, 50, 2, 30), (2, 7.5, 3, 5)):\n    try:\n        retry_delays(*args)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"retry_delays{args} should raise ValueError\")\n",
+    "heldout_check": "from retries import retry_delays\nfor args in ((4, 100, 2, 60), (3, 2.5, 2, 2)):\n    try:\n        retry_delays(*args)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"retry_delays{args} should raise ValueError\")\n"
+  },
+  {
+    "id": "multiplier-range",
+    "label": "arbitrary",
+    "contract": "A multiplier below 1 raises ValueError; a multiplier of exactly 1 is allowed, and no delay then exceeds base.",
+    "visible_check": "from retries import retry_delays\nfor args in ((3, 4, 0.5, 100), (3, 4, 0, 100), (3, 6, 0.0, 90), (3, 4, -2, 100), (3, 4, -0.5, 100)):\n    try:\n        retry_delays(*args)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"retry_delays{args} should raise ValueError\")\nfor args in ((3, 2, 1, 100), (2, 2.5, 1.0, 30)):\n    got = retry_delays(*args)\n    assert len(got) == args[0] and max(got) <= args[1], (args, got)\n",
+    "heldout_check": "from retries import retry_delays\nfor args in ((4, 8, 0.75, 50), (4, 8, 0, 60), (4, 5, 0.0, 50), (4, 8, -1, 50), (4, 8, -1.5, 50)):\n    try:\n        retry_delays(*args)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"retry_delays{args} should raise ValueError\")\nfor args in ((4, 3, 1.0, 20), (5, 6, 1, 9)):\n    got = retry_delays(*args)\n    assert len(got) == args[0] and max(got) <= args[1], (args, got)\n"
+  },
+  {
+    "id": "positive-base",
+    "label": "arbitrary",
+    "contract": "A base of zero or less raises ValueError.",
+    "visible_check": "from retries import retry_delays\nfor args in ((3, 0, 2, 10), (3, 0.0, 3, 12), (3, -1, 2, 10), (3, -0.25, 2, 10)):\n    try:\n        retry_delays(*args)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"retry_delays{args} should raise ValueError\")\n",
+    "heldout_check": "from retries import retry_delays\nfor args in ((4, 0, 3, 20), (4, 0.0, 2, 15), (4, -3, 3, 20), (4, -0.5, 3, 20)):\n    try:\n        retry_delays(*args)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"retry_delays{args} should raise ValueError\")\n"
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "id": "retry-delays",
+  "module": "retries.py",
+  "brief": "retry_delays() returns wrong delays for some arguments",
+  "version": 1,
+  "author": "coordinator"
+}

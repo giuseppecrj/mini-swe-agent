@@ -1,0 +1,7 @@
+{
+  "id": "byte-size",
+  "module": "sizes.py",
+  "brief": "parse_size() gives wrong answers for some sizes",
+  "version": 1,
+  "author": "coordinator"
+}

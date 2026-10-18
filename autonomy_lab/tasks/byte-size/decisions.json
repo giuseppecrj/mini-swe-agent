@@ -1,0 +1,44 @@
+[
+  {
+    "id": "decimal-numbers",
+    "label": "preserve",
+    "contract": "The number may have a decimal part, as in \"4.5MB\".",
+    "visible_check": "from sizes import parse_size\nfor part, whole, times in ((\"1.5KB\", \"3KB\", 2), (\"0.5MB\", \"1MB\", 2), (\"2.25GB\", \"9GB\", 4)):\n    got = parse_size(part)\n    assert got * times == parse_size(whole), (part, got)\n",
+    "heldout_check": "from sizes import parse_size\nfor part, whole, times in ((\"2.5KB\", \"5KB\", 2), (\"0.75MB\", \"3MB\", 4), (\"1.25GB\", \"5GB\", 4)):\n    got = parse_size(part)\n    assert got * times == parse_size(whole), (part, got)\n"
+  },
+  {
+    "id": "si-prefixes",
+    "label": "arbitrary",
+    "contract": "KB, MB, GB and TB are powers of 1000: 1KB is 1000 bytes.",
+    "visible_check": "from sizes import parse_size\nfor text, want in ((\"3KB\", 3000), (\"2MB\", 2 * 10**6), (\"4GB\", 4 * 10**9), (\"1TB\", 10**12)):\n    got = parse_size(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from sizes import parse_size\nfor text, want in ((\"5KB\", 5000), (\"7MB\", 7 * 10**6), (\"3GB\", 3 * 10**9), (\"2TB\", 2 * 10**12)):\n    got = parse_size(text)\n    assert got == want, (text, got)\n"
+  },
+  {
+    "id": "binary-prefixes",
+    "label": "inferable",
+    "contract": "KiB, MiB, GiB and TiB are powers of 1024: 1KiB is 1024 bytes.",
+    "visible_check": "from sizes import parse_size\nfor text, want in ((\"2KiB\", 2048), (\"3MiB\", 3 * 1024**2), (\"1GiB\", 1024**3), (\"1TiB\", 1024**4)):\n    got = parse_size(text)\n    assert got == want, (text, got)\n",
+    "heldout_check": "from sizes import parse_size\nfor text, want in ((\"5KiB\", 5120), (\"2MiB\", 2 * 1024**2), (\"4GiB\", 4 * 1024**3), (\"3TiB\", 3 * 1024**4)):\n    got = parse_size(text)\n    assert got == want, (text, got)\n"
+  },
+  {
+    "id": "short-units",
+    "label": "arbitrary",
+    "contract": "A unit may leave out its B: K, M, G and T alone are accepted as kilo, mega, giga and tera, as in \"8G\".",
+    "visible_check": "from sizes import parse_size\nfor number, unit, power in ((4, \"K\", 1), (6, \"M\", 2), (2, \"G\", 3), (1, \"T\", 4)):\n    got = parse_size(f\"{number}{unit}\")\n    assert number * 1000**power <= got <= number * 1024**power, (unit, got)\n",
+    "heldout_check": "from sizes import parse_size\nfor number, unit, power in ((9, \"K\", 1), (3, \"M\", 2), (5, \"G\", 3), (2, \"T\", 4)):\n    got = parse_size(f\"{number}{unit}\")\n    assert number * 1000**power <= got <= number * 1024**power, (unit, got)\n"
+  },
+  {
+    "id": "fractional-bytes",
+    "label": "arbitrary",
+    "contract": "A size that is not a whole number of bytes, such as \"1.5B\", raises ValueError.",
+    "visible_check": "from sizes import parse_size\nfor text in (\"2.5B\", \"0.25B\", \"1.0005KB\"):\n    try:\n        parse_size(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_size({text!r}) should raise ValueError\")\n",
+    "heldout_check": "from sizes import parse_size\nfor text in (\"3.5B\", \"0.75B\", \"2.0001KB\"):\n    try:\n        parse_size(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_size({text!r}) should raise ValueError\")\n"
+  },
+  {
+    "id": "negative-size",
+    "label": "arbitrary",
+    "contract": "A negative size, such as \"-1KB\", raises ValueError.",
+    "visible_check": "from sizes import parse_size\nfor text in (\"-5KB\", \"-2B\", \"-1.5GB\"):\n    try:\n        parse_size(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_size({text!r}) should raise ValueError\")\n",
+    "heldout_check": "from sizes import parse_size\nfor text in (\"-3MB\", \"-7B\", \"-2.5KB\"):\n    try:\n        parse_size(text)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(f\"parse_size({text!r}) should raise ValueError\")\n"
+  }
+]

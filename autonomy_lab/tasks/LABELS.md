@@ -145,3 +145,72 @@ check.
   (the `malformed-raises` contract lists its classes and excludes them).
 - table-render: trailing spaces (every check compares lines after
   `rstrip`), and bool cells, which the starter docstring excludes.
+
+## Pending blind approval (tasks 10–12)
+
+Written by the coordinator after the 2026-10-18 G2 decision, without
+seeing any trial results. These labels are **not approved yet**; they need
+the same cross-family audit and their own blind approval. Each starter
+passes exactly its `preserve` checks and fails every other held-out check.
+
+Totals for the 3 tasks and 17 decisions: 12 arbitrary, 2 inferable and 3
+preserve, with 24 mutants. config-merge has no `inferable` decision since
+`inputs-unchanged` was relabelled (see below).
+
+Changed after the first audit (`tasks-10-12-audit1`):
+
+- byte-size: `short-units` now grades only whether a unit without its B is
+  accepted. Its scale is ungraded, so the result no longer depends on the
+  `si-prefixes` policy; `short-units--binary` was removed. `neutral.md` no
+  longer talks about limits and thresholds.
+- retry-delays: an immediate first retry is a new `first-delay`
+  alternative. The `cap-clamps` and `multiplier-range` checks no longer
+  depend on the first-delay rule. `positive-base` and `multiplier-range`
+  cover int and float values in both channels. `base-above-cap--first-uncapped`
+  was removed, because `max_delay` names an upper bound.
+- config-merge: the `inputs-unchanged` checks contain overlapping lists,
+  top-level and nested, and the decision is now `arbitrary`. The
+  `nested-merge`, `none-value` and `list-values` contracts are narrowed to
+  what their checks grade.
+- All three starters state their input domain in the docstring.
+
+Changed after the second audit (`tasks-10-12-audit2`; byte-size and
+retry-delays had no findings): config-merge's visible `none-value` check
+now includes `None` over a string, its held-out check `None` over a number,
+and its visible `nested-merge` check a nested string conflict, so both
+channels cover the same value types.
+
+| Task | Decision | Label | Reason, then the graded behaviour and each alternative with its mutant |
+|---|---|---|---|
+| byte-size | decimal-numbers | preserve | The starter's `float()` already accepts "1.5KB". A rewrite with a digits-only pattern might reject it (`decimal-numbers`). The checks compare a decimal size with a whole one (`"1.5KB"` twice is `"3KB"`), so the meaning of KB is not also graded. |
+| byte-size | si-prefixes | arbitrary | Binary. Graded: KB, MB, GB and TB are powers of 1000, as in SI and IEC 80000-13. Alternative: powers of 1024, the JEDEC and Windows reading, as in the starter (`si-prefixes`). |
+| byte-size | binary-prefixes | inferable | KiB, MiB, GiB and TiB are defined as powers of 1024 by IEC 80000-13, so no other reading is reasonable. The starter does not know them and raises (`binary-prefixes`). |
+| byte-size | short-units | arbitrary | Binary. Graded: a bare K, M, G or T is accepted as a unit. Alternative: the B is required, so `ValueError` (`short-units`); the starter raises `KeyError`. The scale of a bare unit is ungraded: the checks accept anything from the 1000-based to the 1024-based value and never compare with KB, so a parser that keeps K binary (as `ls -h`, JVM and Docker memory flags do) passes under either `si-prefixes` policy. |
+| byte-size | fractional-bytes | arbitrary | Graded: a size that is not a whole number of bytes ("2.5B", "1.0005KB") raises `ValueError`. Alternatives: truncate, as the starter's `int()` does (`fractional-bytes`); round to the nearest byte (`fractional-bytes--nearest`); round up (`fractional-bytes--round-up`). The inputs are fractional under both readings of KB. |
+| byte-size | negative-size | arbitrary | **Borderline**: rejecting a negative size may be the expected behaviour for most engineers. Binary. Graded: `ValueError`. Alternative: return the negative byte count, as the starter does, for size deltas (`negative-size`). The filler no longer mentions limits or thresholds, so it does not favour sizes that cannot be negative. |
+| retry-delays | first-delay | arbitrary | **Borderline**: the name `base` may lean toward the graded behaviour. Graded: the first delay is `base`, and the multiplier first applies to the second delay (AWS's `base * 2 ** attempt` with attempt 0). Alternatives: the multiplier already applies to the first delay, as with tenacity's attempt numbering and the starter (`first-delay`); the first retry happens at once, then `base`, then growth (`first-delay--immediate`). |
+| retry-delays | cap-clamps | preserve | The starter's `min()` already makes a delay that would grow past `max_delay` equal `max_delay`. A rewrite might stop growing at the last delay below the cap instead (`cap-clamps`). The checks use enough retries that the delays reach the cap under every first-delay alternative, and assert only that the largest and the last delay equal `max_delay`, so the first-delay rule is not also graded. |
+| retry-delays | long-schedule | inferable | Nobody wants a schedule of a few thousand retries to crash. The starter's closed form `base * multiplier ** retry` overflows floats (`long-schedule`, the starter's formula). The checks assert the length, the cap and a constant tail, not the cap-clamping policy. |
+| retry-delays | base-above-cap | arbitrary | Binary. Graded: a base larger than `max_delay` raises `ValueError`. Alternative: clamp every delay to `max_delay`, as the starter's `min()` does (`base-above-cap`). Returning an uncapped base as the first delay was dropped as an alternative: the name `max_delay` states an upper bound. A base equal to `max_delay` is not graded. |
+| retry-delays | multiplier-range | arbitrary | Graded: a multiplier below 1 (fractions, 0 and negatives, as ints and floats) raises `ValueError`, and exactly 1 (int or float) is allowed, with no delay above `base`. The check asserts no exact schedule, so the first-delay rule is not also graded. Alternatives: a multiplier between 0 and 1 is allowed and the delays shrink, as in the starter (`multiplier-range`); the delays must grow, so 1 also raises (`multiplier-range--strict`). |
+| retry-delays | positive-base | arbitrary | Binary. Graded: a base of zero or less raises `ValueError`. Alternative: a zero base is allowed and means retrying at once, while a negative one still raises (`positive-base`). The starter allows both and fails the check. Both channels use int and float zeros and negatives. |
+| config-merge | type-change | preserve | The starter's `dict.update` already lets a string or number in `override` replace a dictionary in `base`, and the other way round. A deep-merge rewrite might recurse whenever the base value is a dictionary and crash (`type-change`). |
+| config-merge | inputs-unchanged | arbitrary | Relabelled after the first audit: merging into `base` in place is a reasonable API, and the starter does it, so neither the brief nor the signature settles immutability. Graded: neither argument, nor anything inside it, is modified. Alternatives: an in-place deep update that writes into `base` and returns it, like the starter (`inputs-unchanged`); a variant of the in-place policy that copies dictionaries but extends `base`'s lists in place (`inputs-unchanged--lists-in-place`). The checks contain overlapping lists, top-level and nested, and assert only that the inputs are unchanged, not the merged result. |
+| config-merge | nested-merge | arbitrary | **Borderline**: deep merging may be the expected behaviour for layered configuration. Binary. Graded: two dictionaries under the same key are merged recursively. The contract and checks cover only nested strings and numbers, so `None` and lists below the top level are not graded. Alternative: a shallow merge, where the override dictionary replaces the base one, as `dict.update` and `{**a, **b}` do and as the starter does (`nested-merge`). |
+| config-merge | none-value | arbitrary | Graded (top level only): a `None` in `override` keeps the base value, or leaves the key absent, as with unset options. Alternatives: `None` is stored like any value, as in the starter (`none-value`); `None` deletes the key, as in JSON Merge Patch, RFC 7386 (`none-value--deletes`). Falsy values such as 0 and `False` still override in both checks, so a truthiness test fails this decision only. |
+| config-merge | list-values | arbitrary | **Borderline**: the parameter name `override` may lean toward replacement. Graded (top level only): two lists under the same key are concatenated, base first. Alternatives: the override list replaces the base list, as in the starter (`list-values`); append only the override items that the base list lacks (`list-values--union`). |
+
+Deliberately ungraded for tasks 10–12 (no check depends on these; probes that
+flip them pass every check):
+
+- byte-size: letter case and lowercase "b" as bits (every check uses
+  canonical case), spaces, bare numbers without a unit, unknown units,
+  whether a bare K, M, G or T is decimal or binary, and float precision
+  (every decimal in a whole-size check is exact in binary).
+- retry-delays: zero or negative `retries`, the validity of `max_delay`,
+  a base equal to `max_delay`, int versus float results, and the order of
+  validation.
+- config-merge: how `None` and lists below the top level appear in the
+  returned result (`inputs-unchanged` still grades that nested containers in
+  the inputs are left unmodified), key order, whether the result shares
+  nested objects with the inputs, and `None` values in `base`.
