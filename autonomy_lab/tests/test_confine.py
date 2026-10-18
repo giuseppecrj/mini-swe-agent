@@ -949,7 +949,7 @@ class SignalScanTests(unittest.TestCase):
 
     def test_absolute_non_system_paths(self):
         events = [
-            start("1", "bash", command="cat /home/g/Projects/mini-swe-agent/autonomy_lab/runner.py"),
+            start("1", "bash", command="cat /home/user/project/autonomy_lab/runner.py"),
             start("2", "read", path="/pi-agent/auth.json"),
             start("3", "bash", command="PYTHONPATH=/srv/repo python3 -m x"),
         ]
@@ -973,8 +973,8 @@ class SignalScanTests(unittest.TestCase):
 
     def test_denied_paths_from_error_results(self):
         events = [
-            start("1", "bash", command="ls /home/g/.pi/agent/sessions"),
-            end("1", "bash", "ls: cannot access '/home/g/.pi/agent/sessions': No such file or directory", True),
+            start("1", "bash", command="ls /home/user/.pi/agent/sessions"),
+            end("1", "bash", "ls: cannot access '/home/user/.pi/agent/sessions': No such file or directory", True),
             start("2", "bash", command="python3 -c \"open('../x/runner.py')\""),
             end("2", "bash", "FileNotFoundError: [Errno 2] No such file or directory: '../x/runner.py'", True),
             start("3", "bash", command="cd .. && cat autonomy_lab/runner.py"),
@@ -986,7 +986,7 @@ class SignalScanTests(unittest.TestCase):
         ]
         signals = scan_confinement_signals(events)
         denied = [s["detail"] for s in signals if s["kind"] == "denied_path"]
-        self.assertEqual(denied, ["bash: /home/g/.pi/agent/sessions", "bash: ../x/runner.py", "bash: .."])
+        self.assertEqual(denied, ["bash: /home/user/.pi/agent/sessions", "bash: ../x/runner.py", "bash: .."])
         # The write to /etc/x was refused by the profile; /etc is on the argument allowlist, the denial is not.
         self.assertIn({"kind": "denied_operation", "detail": "write: read-only file system: /etc/x"}, signals)
         # No path in the message and none in the arguments: the message itself is the detail.
@@ -1023,48 +1023,48 @@ class SignalScanTests(unittest.TestCase):
     def test_doubled_leading_slash_and_dot_segments_are_recognised(self):
         # The reviewer's case: `//home/...` was treated as a non-path and dropped.
         events = [
-            start("1", "bash", command="cat //home/g/Projects/mini-swe-agent/autonomy_lab/runner.py"),
-            start("2", "read", path="///home/g/.pi/agent/sessions/x.jsonl"),
-            start("3", "read", path="/home/./g/notes.txt"),
+            start("1", "bash", command="cat //home/user/project/autonomy_lab/runner.py"),
+            start("2", "read", path="///home/user/.pi/agent/sessions/x.jsonl"),
+            start("3", "read", path="/home/./user/notes.txt"),
             start("4", "bash", command="cat /work/./sub/../ledger.py; curl https://example.com/a/b"),
         ]
         signals = scan_confinement_signals(events)
         self.assertEqual({s["kind"] for s in signals}, {"absolute_path"})
         details = [s["detail"] for s in signals]
-        self.assertIn("bash: //home/g/Projects/mini-swe-agent/autonomy_lab/runner.py", details)
-        self.assertIn("read: ///home/g/.pi/agent/sessions/x.jsonl", details)
-        self.assertIn("read: /home/./g/notes.txt", details)
+        self.assertIn("bash: //home/user/project/autonomy_lab/runner.py", details)
+        self.assertIn("read: ///home/user/.pi/agent/sessions/x.jsonl", details)
+        self.assertIn("read: /home/./user/notes.txt", details)
         self.assertEqual(len(signals), 3)
 
     def test_host_like_double_slash_paths_and_file_urls_are_recognised(self):
         # The reviewer's cases: `//host.like/...` was taken for a URL authority, and file:// URLs were dropped whole.
         events = [
             start("1", "bash", command="cat //home.dir/g/notes.txt"),
-            start("2", "bash", command="curl 'file:///home/g/.pi/agent/auth.json'; curl https://example.com/a/b"),
+            start("2", "bash", command="curl 'file:///home/user/.pi/agent/auth.json'; curl https://example.com/a/b"),
             start("3", "bash", command="python3 -c \"urlopen('file://localhost/srv/repo/runner.py')\""),
-            start("4", "read", path="file:///home/g/x.jsonl"),
+            start("4", "read", path="file:///home/user/x.jsonl"),
             start("5", "bash", command="curl file:///work/ledger.py file:///usr/share/x"),
-            start("6", "bash", command="curl file:///home/g/missing"),
-            end("6", "bash", "curl: (37) Couldn't open file file:///home/g/missing: No such file or directory", True),
+            start("6", "bash", command="curl file:///home/user/missing"),
+            end("6", "bash", "curl: (37) Couldn't open file file:///home/user/missing: No such file or directory", True),
         ]
         signals = scan_confinement_signals(events)
         self.assertEqual(
             signals,
             [
                 {"kind": "absolute_path", "detail": "bash: //home.dir/g/notes.txt"},
-                {"kind": "absolute_path", "detail": "bash: file:///home/g/.pi/agent/auth.json"},
+                {"kind": "absolute_path", "detail": "bash: file:///home/user/.pi/agent/auth.json"},
                 {"kind": "absolute_path", "detail": "bash: file://localhost/srv/repo/runner.py"},
-                {"kind": "absolute_path", "detail": "read: file:///home/g/x.jsonl"},
-                {"kind": "absolute_path", "detail": "bash: file:///home/g/missing"},
-                {"kind": "denied_path", "detail": "bash: file:///home/g/missing"},
+                {"kind": "absolute_path", "detail": "read: file:///home/user/x.jsonl"},
+                {"kind": "absolute_path", "detail": "bash: file:///home/user/missing"},
+                {"kind": "denied_path", "detail": "bash: file:///home/user/missing"},
             ],
         )
 
     def test_normalise_path(self):
         cases = {
-            "//home/g": "/home/g",
-            "///home/g": "/home/g",
-            "/home/./g": "/home/g",
+            "//home/user": "/home/user",
+            "///home/user": "/home/user",
+            "/home/./user": "/home/user",
             "/work/sub/../ledger.py": "/work/ledger.py",
             "//work/./x/..": "/work",
             "../x": "../x",
@@ -1119,7 +1119,7 @@ class SignalScanTests(unittest.TestCase):
             "a/../../b": "parent_relative_path",
             "sub/../ledger.py": None,
             "/work/../home": "parent_relative_path",
-            "/home/g": "absolute_path",
+            "/home/user": "absolute_path",
             "/": None,
             "//": None,
             "/usr/bin/python3": None,
@@ -1129,9 +1129,9 @@ class SignalScanTests(unittest.TestCase):
             "$HOME/x": "home_path",
             "x.py": None,
             "...": None,
-            "//home/g": "absolute_path",
-            "///home/g": "absolute_path",
-            "/home/./g": "absolute_path",
+            "//home/user": "absolute_path",
+            "///home/user": "absolute_path",
+            "/home/./user": "absolute_path",
             "//work/x": None,
             "//usr/bin/python3": None,
             # Linux resolves a doubled leading slash as an absolute path, whatever follows it.
@@ -1139,8 +1139,8 @@ class SignalScanTests(unittest.TestCase):
             "//registry.npmjs.org:443/x": "absolute_path",
             "//host.like/etc": "absolute_path",
             # File URLs name local paths.
-            "file:///home/g/.pi/agent/auth.json": "absolute_path",
-            "file://localhost/home/g": "absolute_path",
+            "file:///home/user/.pi/agent/auth.json": "absolute_path",
+            "file://localhost/home/user": "absolute_path",
             "FILE:///srv/repo": "absolute_path",
             "file://host.like/x": "absolute_path",
             "file:///work/%2e%2e/home": "parent_relative_path",

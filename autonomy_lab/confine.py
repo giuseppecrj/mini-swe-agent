@@ -726,7 +726,7 @@ SCAN_ERRORS = (AttributeError, KeyError, TypeError, ValueError)
 
 
 def normalise_path(word):
-    """Collapse repeated leading slashes, ``/./`` and ``..`` so ``//home/g`` and ``/home/./g`` compare as /home/g."""
+    """Collapse repeated leading slashes, ``/./`` and ``..`` so ``//home/user`` and ``/home/./user`` compare as /home/user."""
     if not word:
         return word
     return posixpath.normpath(re.sub(r"^/{2,}", "/", word))
