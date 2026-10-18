@@ -625,7 +625,9 @@ class GradingTests(unittest.TestCase):
         # ready marker was scored as heldout_failed against the condition instead of an infrastructure failure.
         deaths = {
             "silent exit": "import sys\nsys.exit(1)\n",
-            "killed": "import os, signal\nos.kill(os.getpid(), signal.SIGSYS)\n",
+            # SIGKILL, not SIGSYS: a core-dumping signal makes systemd-coredump record a "crash" (and the desktop
+            # notify) on every test run, and the start-failure rule does not depend on which signal killed it.
+            "killed": "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n",
             "hang": "import time\ntime.sleep(30)\n",
         }
         for name, script in deaths.items():

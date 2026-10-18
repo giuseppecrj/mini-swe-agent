@@ -1221,7 +1221,10 @@ def analyze(
         warnings.append(f"E1 has {e1_tasks} tasks; the spec's minimum bank is {BANK_MIN_TASKS}")
     warnings += [f"validity gate failed: {f}" for f in validity["failed_gates"]]
     if validity["status"] == "invalid":
-        warnings.append("the run is invalid (§2.4): every prediction is reported as invalid")
+        warnings.append(
+            "the run is invalid (§2.4): every confirmatory prediction is reported as invalid "
+            f"({', '.join(DESCRIPTIVE_PREDICTIONS)} stay descriptive)"
+        )
     if validity["unreviewed_confinement_signals"]:
         warnings.append(
             f"{validity['unreviewed_confinement_signals']} confinement signal(s) not covered by the hand review; "
@@ -1319,8 +1322,9 @@ def to_markdown(result):
     ]
     if result["status"] != "valid":
         lines.append(
-            f"No prediction is supported or falsified; every verdict is `{result['status']}`, and the numbers "
-            "below are descriptive only (§2.4)."
+            f"No prediction is supported or falsified; every confirmatory verdict is `{result['status']}` "
+            f"({' and '.join(DESCRIPTIVE_PREDICTIONS)} stay `descriptive`), and the numbers below are descriptive "
+            "only (§2.4)."
         )
         lines += [f"- {f}" for f in result["validity"]["failed_gates"]]
     lines += ["", "| Prediction | Verdict |", "|---|---|"]

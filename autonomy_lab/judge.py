@@ -112,23 +112,25 @@ PLACEHOLDERS = re.compile(r"\{(NONCE|MODULE|BEHAVIOUR|FINAL_MESSAGE|DIFF)\}")
 FENCE = re.compile(r"```(?:json)?[ \t]*\n?(.*?)\n?[ \t]*```", re.DOTALL)
 
 # ---- arm redaction (minimal; see the module docstring). Only a verbatim quotation of the E2 `assume` sentence is
-# removed. Between its words a quotation may wrap onto a new line, which may open with a comment ("#") or Markdown
-# quote (">") marker; its final full stop is optional.
-_QUOTE = "\"'`“”‘’«»"
-_WRAP = r"(?:[ \t]*\n[ \t]*(?:#+|(?:>[ \t]*)+)?[ \t]*|[ \t]+)"
+# removed, as whole words. Between its words a quotation may wrap: spaces, line breaks (LF or CRLF, blank lines
+# included) whose new line opens with comment or quote markers ("#", "//", "*", ">"), or a join of adjacent string
+# literals ('..." "...'). Its final full stop is optional. Possessive quantifiers keep matching linear.
+_WRAP = r"(?:[ \t]|\r?\n[ \t]*+(?:(?:#|//|\*|>)[ \t]*+)*+|[\"'][ \t\r\n]*+[\"'])++"
 
 
 def _quotation_pattern(sentence):
     words = [re.escape(w) for w in sentence.split()]
-    words[-1] = words[-1].removesuffix(r"\.") + r"\.?"
-    body = _WRAP.join(words)
-    # Quotation marks are part of the quotation only when they enclose it on both sides.
-    return re.compile(rf"[{_QUOTE}]+{body}[{_QUOTE}]+|{body}", re.IGNORECASE)
+    words[-1] = words[-1].removesuffix(r"\.") + r"(?:\.|(?!\w))"
+    body = r"(?<!\w)" + _WRAP.join(words)
+    # Quotation marks belong to the quotation only as a matched pair around it (the same straight quote or triple
+    # quote on both sides, or a typographic pair), so a neighbouring literal's quote is never consumed.
+    quoted = rf"(?P<q>\"\"\"|'''|[\"'`]){body}(?P=q)|“{body}”|‘{body}’|«{body}»"
+    return re.compile(rf"{quoted}|{body}", re.IGNORECASE)
 
 
 ARM_QUOTATION = _quotation_pattern(ASSUME_SENTENCE)
 # A line that holds nothing but indentation, comment markers and Markdown quote markers.
-_EMPTY_LINE = re.compile(r"[ \t#>]*")
+_EMPTY_LINE = re.compile(r"[ \t#>\r]*")  # \r: the line break of a CRLF line goes with it
 
 
 class JudgeCallError(RuntimeError):

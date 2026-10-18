@@ -11,6 +11,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -376,7 +377,15 @@ QUOTATIONS = [
     (f"> {ARM_HEAD_LINE}\n> any {ARM_TAIL_LINE}\n\n- X", "\n- X"),
     (f"Done.\n\n{ASSUME_SENTENCE.upper()}", "Done.\n"),
     ("Done.\n" + "  ".join(ASSUME_SENTENCE.split(" ")) + "\nX", "Done.\nX"),
-    (f"'{ASSUME_SENTENCE}\" and more", " and more"),
+    # Mismatched marks are not a pair: they stay (harmless), so a neighbouring quote is never consumed.
+    (f"'{ASSUME_SENTENCE}\" and more", "'\" and more"),
+    # Review of the minimal redaction: a following string literal keeps its opening quote ...
+    (f'x = "{ASSUME_SENTENCE}""KEEP"', 'x = "KEEP"'),
+    # ... and wrapped copies go: CRLF with comment markers, blank lines, "*" continuations, adjacent literals.
+    (ARM_HEAD_LINE + "\r\n# any " + ARM_TAIL_LINE + "\r\nX", "X"),
+    (ARM_HEAD_LINE + "\n\nany " + ARM_TAIL_LINE + "\nX", "X"),
+    ("/* " + ARM_HEAD_LINE + "\n * any " + ARM_TAIL_LINE + " */", "/*  */"),
+    ('msg = ("' + ARM_HEAD_LINE + ' "\n       "any ' + ARM_TAIL_LINE + '")', "msg = ()"),
     (f"Quote: `{ASSUME_SENTENCE}`, then X.", "Quote: , then X."),
     (f"{ASSUME_SENTENCE} {ASSUME_SENTENCE}", ""),
     (
@@ -423,6 +432,18 @@ class RedactionTests(unittest.TestCase):
                 for quoted in (quotation + "\n" + text, text + "\n" + quotation):
                     with self.subTest(text, quoted=quoted):
                         self.assertEqual(judge.redact_instruction_quote(quoted), (text, 1))
+
+    def test_a_match_never_eats_part_of_a_word(self):
+        # Review of the minimal redaction: the optional full stop let "specify" match inside "specifying".
+        text = ASSUME_SENTENCE.rstrip(".") + "ing is unnecessary."
+        self.assertEqual(judge.redact_instruction_quote(text), (text, 0))
+        prefixed = "Re" + ASSUME_SENTENCE[0].lower() + ASSUME_SENTENCE[1:]
+        self.assertEqual(judge.redact_instruction_quote(prefixed), (prefixed, 0))
+
+    def test_matching_stays_linear_on_pathological_input(self):
+        started = time.monotonic()
+        judge.redact_instruction_quote(' "' * 5000 + " ".join(ASSUME_SENTENCE.split()[:5]) + " " * 20000 + "x")
+        self.assertLess(time.monotonic() - started, 1.0)
 
     def test_a_reviewer_reproduction_no_longer_invents_a_disclosure(self):
         # Round 3: "You asked me to list changes, not assumptions: X" used to become "Assumption: X".
