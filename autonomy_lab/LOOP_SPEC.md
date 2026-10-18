@@ -349,6 +349,13 @@ No task, check, label, threshold, rubric or analysis rule changes after a run st
 
 Estimated benchmark wall clock is about 5.5 h at pilot rates. The cap is 8 h. Cost estimates scale pilot averages; review-session cost is a guess and is tracked from actual usage. Reaching the cost cap stops the loop even if count caps remain.
 
+**Gate G4 decision (user, 2026-10-18).** The dollar figures are list-price estimates. The model calls run on the user's subscriptions (OAuth sign-ins), not on billed API keys, so dollars are no longer a cap: they are recorded for information only. The binding limits are now:
+
+- **Trial counts:** T8 (36) and E1 (192) are approved now. E2 at 288 trials is approved to run after E1's results have been reviewed at G3.
+- **Provider usage limits:** a usage-limit error stops the loop (§8.3).
+
+The 250-call cap on auxiliary calls is dropped.
+
 ### 8.2 Iteration budget
 
 Each harness task gets at most 3 review–fix rounds. If a task still has open high or medium findings after that, stop and escalate.
