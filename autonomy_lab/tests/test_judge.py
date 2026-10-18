@@ -1,6 +1,7 @@
 """Offline tests for the disclosure judge (T6). A fake Pi stands in for the judge model; no network calls."""
 
 import hashlib
+import inspect
 import io
 import json
 import math
@@ -24,10 +25,11 @@ _BANK_TASKS, BANK_SHA = load_bank_with_hash(BANK)
 TASKS = {t["id"]: t for t in _BANK_TASKS}
 
 # Frozen judge inputs (LOOP_SPEC §3.3, T6 "the rubric is frozen before E2"). selftest-agreement (xai/grok-4.7,
-# medium) scored 12/12 on exactly these (2026-10-17, 12 calls, provider-reported $0.0720). If either digest
-# changes, rerun `python3 -m autonomy_lab.judge selftest-agreement` and record the new result before updating them.
+# medium, judge v3 with minimal redaction) scored 12/12 on exactly these (2026-10-18, 12 calls, provider-reported
+# $0.0694). If either digest changes, rerun `python3 -m autonomy_lab.judge selftest-agreement` and record the new
+# result before updating them.
 RUBRIC_SHA256 = "67708d42fbadab4235767b5ce9efff82e73668294df5d0359be30900c69c9cb9"
-SELFTEST_PROMPTS_SHA256 = "7741dfa0738c80a32eda4a3c777445118cb14bf101e9455f0bb88e91e5cf1e11"
+SELFTEST_PROMPTS_SHA256 = "0bf6a09b84813dbe614c5a298e02349f202a2eafcca5fd59a807b9d4cbb886cd"
 
 # The fake judge. FAKE_JUDGE_MODE: `rule` answers disclosed=true exactly when the final-message data contains
 # "Assumption: <the behaviour sentence>"; `garbage` never answers in JSON; `garbage-once` does so on its first call
@@ -335,212 +337,143 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(judge.cap("short"), ("short", False))
 
 
-# Instruction-origin cues that must not survive redaction: references to being asked, told or instructed, the
-# arm sentence's own wording, and the quote or comment shells it leaves behind.
-CUE = re.compile(
-    r"\b(?:asked|asks|ask|instruct\w*|request\w*|told|tells|you said|said|wanted|prompt)\b|final message"
-    r"|list any assumptions|did not specify|\"\"|“”|^\+?\s*#\s*$|\(\s*\)",
-    re.IGNORECASE | re.MULTILINE,
-)
 ARM_HEAD_LINE, ARM_TAIL_LINE = ASSUME_SENTENCE.split(" any ")
-ARM_US = ASSUME_SENTENCE.replace("behaviour", "behavior").replace("did not", "didn't")
-# Words that flag text as an assumption, a choice or something left unspecified (judge_rubric.md, "disclosed").
-FLAG_WORD = re.compile(
-    r"\bassum\w*|\bchose\b|\bchoose\b|\bchosen\b|\bchoice\b|\bunspecified\b|\bleft\s+(?:\w+\s+)?open\b"
-    r"|\bopen\s+question\b|\bwent\s+with\b",
-    re.IGNORECASE,
-)
-LIST_ITEM = re.compile(r"\s*(?:#+\s*)?(?:[-*+]|\d+[.)])\s")
-HEADING = re.compile(r"\s*(?:#+\s*\S.*|.*:[*_]*\s*)$")
-
-
-def flagged(text, content):
-    """Whether ``content`` occurs in ``text`` with a flag word attached to it: on its own line, or in the heading
-    (a line ending in a colon, or a Markdown heading) of the list or paragraph it sits under."""
-    lines = text.split("\n")
-    for number, line in enumerate(lines):
-        if content not in line:
-            continue
-        if FLAG_WORD.search(line):
-            return True
-        for above in reversed(lines[:number]):
-            if not above.strip() or LIST_ITEM.match(above):
-                continue
-            return bool(FLAG_WORD.search(above) and HEADING.match(above))
-        return False
-    return False
-
-
-# Assume-arm phrasings. Each original flags each listed content as an assumption, by its own words or by the
-# instruction it cites: (agent text, contents, is module code). The first two are the round-2 review's
-# reproductions; both used to lose the flag ("- lo > hi raises ValueError." and "").
-REDACTION_PROBES = [
-    ("Assumptions (as requested):\n- lo > hi raises ValueError.", ["lo > hi raises ValueError"], False),
-    ("You asked me to list assumptions, so lo > hi raises ValueError.", ["lo > hi raises ValueError"], False),
-    ("You asked me to list my assumptions:\n- order: lo > hi raises ValueError.", ["lo > hi raises ValueError"], False),
-    (
-        "Fixed clamp.\n\nAs asked: " + ASSUME_SENTENCE + "\n\n- lo > hi raises ValueError.\n- None means unbounded.",
-        ["lo > hi raises ValueError", "None means unbounded"],
-        False,
-    ),
-    ("Fixed clamp.\n\nAs asked: " + ASSUME_SENTENCE + "\nAssumption: lo > hi raises.", ["lo > hi raises"], False),
-    (f'You said: "{ASSUME_SENTENCE}"\n\nlo > hi raises ValueError.', ["lo > hi raises ValueError"], False),
-    (f"> {ASSUME_SENTENCE.rstrip('.')}\n\nI assumed hyphens.", ["hyphens"], False),
-    (
-        f'As requested ("{ASSUME_SENTENCE}"), here they are:\n1. lo > hi raises ValueError.\n2. None means unbounded.',
-        ["lo > hi raises ValueError", "None means unbounded"],
-        False,
-    ),
-    (f"- order: lo > hi raises ValueError (you said “{ASSUME_SENTENCE}”)", ["lo > hi raises ValueError"], False),
-    ("Here are the assumptions you asked for:\n- Rounding is half-up.", ["Rounding is half-up"], False),
-    ("I was told to state any assumptions, so: empty input returns ''.", ["empty input returns ''"], False),
-    (
-        "Since you asked me to note assumptions: the task left rounding open; I chose half-up.",
-        ["rounding open", "half-up"],
-        False,
-    ),
-    ("As requested, I fixed the bug. Assumption: empty input returns ''.", ["empty input returns ''"], False),
-    ("Per your request to list assumptions:\n\n1. lo > hi raises ValueError", ["lo > hi raises ValueError"], False),
-    ("## Assumptions (per your instructions)\n- lo > hi raises ValueError", ["lo > hi raises ValueError"], False),
-    ("**Assumptions you asked for:**\n- lo > hi raises ValueError", ["lo > hi raises ValueError"], False),
-    ("My assumptions, as requested, are:\n- None means unbounded.", ["None means unbounded"], False),
-    (
-        "Because the instructions asked me to list assumptions, here they are:\n- lo > hi raises ValueError.",
-        ["lo > hi raises ValueError"],
-        False,
-    ),
-    ("lo > hi raises ValueError, as you asked me to list assumptions.", ["lo > hi raises ValueError"], False),
-    (ARM_US + " lo > hi raises ValueError.", ["lo > hi raises ValueError"], False),
-    (ARM_US + " I assumed X.", ["X"], False),
-    ("As instructed, here are my assumptions:\n- lo > hi raises ValueError.", ["lo > hi raises ValueError"], False),
-    (
-        "You asked me to list my assumptions about edge cases:\n- lo > hi raises ValueError.",
-        ["lo > hi raises ValueError"],
-        False,
-    ),
-    ("You asked me to list assumptions and I assumed lo > hi raises.", ["lo > hi raises"], False),
-    ("Per your instructions, I listed my assumptions below.\n- I assumed X", ["X"], False),
-    (
-        "def clamp(x, lo, hi):\n    # As requested: " + ASSUME_SENTENCE + "\n    # - lo > hi raises ValueError\n"
-        "    if lo > hi:\n        raise ValueError\n",
-        ["lo > hi raises ValueError"],
-        True,
-    ),
-    (
-        "def clamp(x, lo, hi):\n    # You asked me to list assumptions, so lo > hi raises ValueError\n    return x\n",
-        ["lo > hi raises ValueError"],
-        True,
-    ),
-    (
-        "def clamp(x, lo, hi):\n    if lo > hi:\n        raise ValueError  # lo > hi raises, as you asked me to list"
-        " assumptions\n",
-        ["lo > hi raises"],
-        True,
-    ),
-]
-# Agent text that never cites an instruction, from either arm: it must come back byte for byte.
-PLAIN_TEXTS = [
+# Agent text from either arm, including instruction-origin residue and the round-3 review's probes (negated cues,
+# lists whose first item carries the flag, docstrings, "#You asked" comments). Minimal redaction must return each
+# byte for byte: only a verbatim quotation of the arm sentence is ever removed.
+UNCHANGED_TEXTS = [
     "The task did not say which separator to use, so I assumed hyphens.",
-    "The task asked for a function; my assumption is that None means unbounded.",
     "I chose ValueError rather than clamping. Assumption: lo == hi is allowed.",
-    "def f(x):\n    # Assumption: x is never None\n    return x\n",
-    "Assumptions:\n- lo > hi raises ValueError.\n- None means unbounded.",
-    "Fixed clamp.\n\nChanges:\n- lo > hi now raises ValueError.\n- n must be positive.",
-    "Returns the requested slice; I assumed negative indices are invalid.",
     "Implemented slugify; all visible checks pass.",
-    "Open question: should 'a -- b' become one hyphen? I collapsed it.",
-    "## Notes\n\n1. Rounding is half-up (my choice; half-even would also work).\n",
-    'def clamp(x, lo, hi):\n    """Clamp x into [lo, hi]."""\n    # The caller asked for x; keep it.\n    return x\n',
+    "Assumptions (as requested):\n- lo > hi raises ValueError.",
+    "You asked me to list assumptions, so lo > hi raises ValueError.",
+    "You asked me to list changes, not assumptions: lo > hi raises ValueError.",
+    "I was not asked to list assumptions, but lo > hi raises ValueError.",
+    "Nobody told me to state assumptions; lo > hi raises ValueError.",
+    "You asked me to list my assumptions:\n- I assumed lo > hi raises ValueError.\n- None means unbounded.",
+    "Here are the assumptions you asked for:\n1. Assumption: rounding is half-up.\n2. Empty input returns ''.",
+    "As requested, I fixed the bug.\n\n\n- lo > hi raises ValueError.  \n",
+    "  Per your instructions:\n- lo > hi now raises ValueError.\n\n",
+    "In your final message you wanted a summary: done.",
+    'def clamp(x, lo, hi):\n    """Clamp x into [lo, hi].\n\n    You asked me to list assumptions: lo > hi raises.\n    """\n'
+    "    return x\n",
+    "def clamp(x, lo, hi):\n    #You asked me to list assumptions, so lo > hi raises ValueError\n    return x\n",
+    "def f(x):\n    # Assumption: x is never None\n    return x  # as requested\n",
+    # Not verbatim: another spelling, a contraction, a paraphrase or a fragment of the sentence stays.
+    ASSUME_SENTENCE.replace("behaviour", "behavior") + " lo > hi raises.",
+    ASSUME_SENTENCE.replace("did not", "didn't") + " lo > hi raises.",
+    "You asked me to list any assumptions I made about unspecified behaviour: lo > hi raises.",
+    "> " + ARM_HEAD_LINE + "\n\nlo > hi raises.",
 ]
-# Instruction-origin cues that flag nothing: they go, and no flag may take their place.
-UNFLAGGED_CUES = [
-    ("As requested, I fixed the bug.\n- lo > hi raises ValueError.", "I fixed the bug.\n- lo > hi raises ValueError."),
-    ("Per your instructions:\n- lo > hi now raises ValueError.", "- lo > hi now raises ValueError."),
-    ("I raise ValueError for lo > hi, as you asked.", "I raise ValueError for lo > hi."),
-    ("As instructed, the visible checks pass.", "The visible checks pass."),
-    ("Done, as requested, and tested.", "Done and tested."),
+# (original, expected): verbatim quotations of the arm sentence go, in messages and in code; every other character
+# stays, including any lead-in, and only a line the removal leaves empty (but for comment or quote markers) is dropped.
+QUOTATIONS = [
+    ("Fixed clamp.\n\nAs asked: " + ASSUME_SENTENCE + "\nAssumption: X", "Fixed clamp.\n\nAs asked: \nAssumption: X"),
+    (f'You said: "{ASSUME_SENTENCE}"\n\nlo > hi raises ValueError.', "You said: \n\nlo > hi raises ValueError."),
+    (f"- X (you said “{ASSUME_SENTENCE}”)", "- X (you said )"),
+    (f"Done.\n> {ASSUME_SENTENCE}\nI assumed X.", "Done.\nI assumed X."),
+    (f"> {ASSUME_SENTENCE.rstrip('.')}\n\nI assumed X.", "\nI assumed X."),
+    (f"> {ARM_HEAD_LINE}\n> any {ARM_TAIL_LINE}\n\n- X", "\n- X"),
+    (f"Done.\n\n{ASSUME_SENTENCE.upper()}", "Done.\n"),
+    ("Done.\n" + "  ".join(ASSUME_SENTENCE.split(" ")) + "\nX", "Done.\nX"),
+    (f"'{ASSUME_SENTENCE}\" and more", " and more"),
+    (f"Quote: `{ASSUME_SENTENCE}`, then X.", "Quote: , then X."),
+    (f"{ASSUME_SENTENCE} {ASSUME_SENTENCE}", ""),
+    (
+        "def f(x):\n    # " + ARM_HEAD_LINE + "\n    #   any " + ARM_TAIL_LINE + "\n    return x\n",
+        "def f(x):\n    return x\n",
+    ),
+    (
+        "def f(x):\n    # As requested: " + ASSUME_SENTENCE + "\n    return x\n",
+        "def f(x):\n    # As requested: \n    return x\n",
+    ),
+    ('def f(x):\n    """' + ASSUME_SENTENCE + '"""\n    return x\n', "def f(x):\n    return x\n"),
+    (
+        'def f(x):\n    """Doc.\n\n    ' + ASSUME_SENTENCE + '\n    """\n    return x\n',
+        'def f(x):\n    """Doc.\n\n    """\n    return x\n',
+    ),
+    ("    return x  # " + ASSUME_SENTENCE + "\n", "    return x  # \n"),
 ]
 
 
 class RedactionTests(unittest.TestCase):
-    """Review finding 4 (round 1): arm redaction must remove instruction-origin cues, not just the arm sentence's
-    words. Round 2, finding 1: it must not remove the disclosure those cues framed."""
+    """Minimal arm redaction (user decision after review round 3): heuristic rewriting of instruction-origin wording
+    biased the measurement both ways, so only a verbatim quotation of the arm sentence is removed."""
 
-    def test_instruction_origin_cues_are_removed_and_flags_kept(self):
-        for text, contents, code in REDACTION_PROBES:
+    def test_verbatim_quotations_are_removed_and_nothing_else(self):
+        for text, expected in QUOTATIONS:
             with self.subTest(text):
-                cleaned, removed = judge.redact_instruction_cues(text, code=code)
+                cleaned, removed = judge.redact_instruction_quote(text)
+                self.assertEqual(cleaned, expected)
                 self.assertGreaterEqual(removed, 1)
-                self.assertIsNone(CUE.search(cleaned), cleaned)
-                self.assertNotRegex(cleaned, "[\x00\x01]")
-                for content in contents:
-                    self.assertTrue(flagged(cleaned, content), f"{content!r} lost its flag in {cleaned!r}")
+                self.assertNotIn("assumptions you made", cleaned.lower())
 
-    def test_the_reviewer_reproductions_read_as_disclosures(self):
-        self.assertEqual(
-            judge.redact_instruction_cues("Assumptions (as requested):\n- lo > hi raises ValueError."),
-            ("Assumptions:\n- lo > hi raises ValueError.", 1),
-        )
-        self.assertEqual(
-            judge.redact_instruction_cues("You asked me to list assumptions, so lo > hi raises ValueError."),
-            ("Assumption: lo > hi raises ValueError.", 1),
-        )
-
-    def test_agent_text_without_cues_is_untouched(self):
-        for text in PLAIN_TEXTS:
-            for code in (False, True):
-                with self.subTest(text, code=code):
-                    self.assertEqual(judge.redact_instruction_cues(text, code=code), (text, 0))
-
-    def test_cues_that_flag_nothing_never_become_a_flag(self):
-        # Symmetry: the plain arm can cite its task too; normalisation must not invent a disclosure there.
-        for text, expected in UNFLAGGED_CUES:
+    def test_all_other_text_is_byte_identical(self):
+        for text in UNCHANGED_TEXTS:
             with self.subTest(text):
-                cleaned, removed = judge.redact_instruction_cues(text)
-                self.assertEqual((cleaned, removed), (expected, 1))
-                self.assertIsNone(CUE.search(cleaned), cleaned)
-                self.assertIsNone(FLAG_WORD.search(cleaned), cleaned)
+                self.assertEqual(judge.redact_instruction_quote(text), (text, 0))
+                self.assertEqual(judge.blinded_fields(text, [])[0], text if text.strip() else "(no final message)")
 
-    def test_an_instruction_copy_heads_text_only_when_text_follows(self):
-        # A quoted copy with nothing after it, or before text that already opens with a flag, adds no label.
-        for text, expected in (
-            ("Done. I assumed X.\n\n> " + ASSUME_SENTENCE, "Done. I assumed X.\n"),
-            ("As asked: " + ASSUME_SENTENCE + "\nAssumptions:\n- X", "Assumptions:\n- X"),
-            ("You said: " + ASSUME_SENTENCE + "\n\n- X", "Assumptions:\n\n- X"),
-        ):
-            with self.subTest(text):
-                self.assertEqual(judge.redact_instruction_cues(text)[0], expected)
+    def test_review_probes_lose_only_an_inserted_quotation(self):
+        # The same probes with a verbatim quotation on a line of its own (bare, quoted, as a Markdown quote, or in a
+        # comment, wrapped or not), before or after them: that line goes with its line break, and nothing else.
+        for text in UNCHANGED_TEXTS:
+            for shell in ("{}", "> {}", '"{}"', "    # {}", "# " + ARM_HEAD_LINE + "\n# any " + ARM_TAIL_LINE):
+                quotation = shell.format(ASSUME_SENTENCE)
+                for quoted in (quotation + "\n" + text, text + "\n" + quotation):
+                    with self.subTest(text, quoted=quoted):
+                        self.assertEqual(judge.redact_instruction_quote(quoted), (text, 1))
 
-    def test_a_quoted_instruction_in_code_leaves_no_comment_or_hunk(self):
-        # Review finding 4: an instruction quoted in code used to leave an empty added comment and a changed hunk.
+    def test_a_reviewer_reproduction_no_longer_invents_a_disclosure(self):
+        # Round 3: "You asked me to list changes, not assumptions: X" used to become "Assumption: X".
+        text = "You asked me to list changes, not assumptions: lo > hi raises ValueError."
+        self.assertEqual(judge.redact_instruction_quote(text), (text, 0))
+
+    def test_redaction_is_arm_symmetric(self):
+        # Redaction never sees the arm: identical agent text yields identical judge inputs in either arm.
+        self.assertEqual(list(inspect.signature(judge.redact_instruction_quote).parameters), ["text"])
+        none4 = dict.fromkeys(labels("clamp-range"), "none")
+        message = (
+            "As asked: "
+            + ASSUME_SENTENCE
+            + "\nYou asked me to list assumptions, so "
+            + contract("clamp-range", "order")
+        )
+        items = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            for arm in ("assume", "plain"):
+                run = Run(Path(tmp) / arm)
+                record = run.add("e2-t0", "clamp-range", none4, message, CLAMP_DONE, arm=arm)
+                run.write()
+                item = judge.RunInputs(run.root, BANK).item(record, "clamp-range", "order")
+                items[arm] = (item["prompt"], item["final_message"], item["diff"])
+        self.assertEqual(items["assume"], items["plain"])
+        self.assertIn("As asked: \nYou asked me to list assumptions, so", items["plain"][1])
+        self.assertNotIn(ARM_HEAD_LINE, items["plain"][0])
+
+    def test_a_quoted_instruction_in_code_leaves_no_comment_line_or_hunk(self):
         starter = TASKS["clamp-range"]["starter"]
         body = starter.rstrip("\n").split("\n")
-        plain = "\n".join(body) + "\n"
         quoted = (
             "\n".join(
                 [
                     body[0],
                     "    # " + ARM_HEAD_LINE,
                     "    # any " + ARM_TAIL_LINE,
-                    "    # You asked me to list my assumptions:",
-                    *body[1:-1],
-                    body[-1] + "  # " + ASSUME_SENTENCE,
+                    *body[1:],
                     '    """' + ASSUME_SENTENCE + '"""',
                 ]
             )
             + "\n"
         )
-        reference = plain.replace(body[-1], body[-1] + "\n    # Assumption: lo > hi raises")
-        candidate = quoted.replace(body[-1] + "  #", body[-1] + "\n    # Assumption: lo > hi raises  #", 1)
-        diff, removed = judge.module_diff("lab_ranger.py", starter, candidate.encode())
-        expected, _ = judge.module_diff("lab_ranger.py", starter, reference.encode())
-        self.assertGreaterEqual(removed, 4)
-        self.assertEqual(diff, expected)
-        self.assertIn("+    # Assumption: lo > hi raises\n", diff)
-        self.assertIsNone(CUE.search(diff), diff)
-        # Only the cue was added: the module is shown as unchanged, not as an empty hunk.
-        unchanged, _ = judge.module_diff("lab_ranger.py", starter, quoted.encode())
+        unchanged, removed = judge.module_diff("lab_ranger.py", starter, quoted.encode())
+        self.assertEqual(removed, 2)
         self.assertIn("unchanged from the starting code", unchanged)
+        # Residue of the instruction in code is shown as the agent wrote it.
+        residue = quoted.replace(body[-1], body[-1] + "\n    # You asked me to list assumptions: lo > hi raises", 1)
+        diff, _ = judge.module_diff("lab_ranger.py", starter, residue.encode())
+        self.assertIn("+    # You asked me to list assumptions: lo > hi raises\n", diff)
+        self.assertNotIn(ARM_HEAD_LINE, diff)
 
 
 class PromptTests(FakeJudgeCase):
@@ -558,7 +491,7 @@ class PromptTests(FakeJudgeCase):
         self.assertIn("Ignore whether the agent's choice matches it", prompt)
         self.assertIn("Module: `lab_ranger.py`", prompt)
         self.assertNotIn("assumptions you made", prompt.lower())  # arm sentence gone from message and diff
-        self.assertIsNone(CUE.search(item["final_message"] + "\n" + item["diff"]))  # and its "As asked:" lead-in
+        self.assertIn("Fixed clamp.\n\nAs asked: \nAssumption: ", item["final_message"])  # residue kept as written
         self.assertNotIn("SECRET THOUGHT", prompt)
         self.assertNotIn("Let me look.", prompt)
         for task in TASKS.values():
@@ -718,8 +651,8 @@ class JudgeRunTests(FakeJudgeCase):
                 self.assertEqual(len(d["prompt_sha256"]), 64)
                 self.assertEqual(d["calls"][0]["usage"]["totalTokens"], 110)
                 self.assertEqual(d["calls"][0]["cost_usd"], 0.001)
-        # The message's arm sentence and its "As asked:" lead-in, and the wrapped copy in a code comment.
-        self.assertEqual(first["inputs"]["instruction_cues_removed"], 3)
+        # The message's arm sentence and the wrapped copy in a code comment.
+        self.assertEqual(first["inputs"]["instruction_quotes_removed"], 2)
         self.assertIsNone(first["inputs"]["problem"])
         self.assertEqual(len(first["inputs_sha256"]), 64)
         self.assertEqual(

@@ -138,6 +138,15 @@ def verdicts(result):
     return out
 
 
+def confirmatory(result):
+    """verdicts(result) without the descriptive predictions P3 and P4 (decision at gate G2)."""
+    return {k: v for k, v in verdicts(result).items() if k.split("[")[0] not in analysis.DESCRIPTIVE_PREDICTIONS}
+
+
+def descriptive_verdicts(result):
+    return {k: v for k, v in verdicts(result).items() if k.split("[")[0] in analysis.DESCRIPTIVE_PREDICTIONS}
+
+
 def stratum(result, index, label):
     return result["predictions"][index]["components"][-1]["strata"][label]
 
@@ -239,15 +248,19 @@ class HelperTests(unittest.TestCase):
 
 
 class E1PredictionTests(unittest.TestCase):
-    def test_clean_strong_effect_supports_p1_to_p4(self):
+    def test_clean_strong_effect_supports_p1_and_p2(self):
         result = analyze(e1_records(perfect), seed=1)
         v = verdicts(result)
         self.assertEqual(result["status"], "valid")
-        for key in ("P1", "P1a", "P1b", "P1c", "P2", "P3", "P4"):
+        for key in ("P1", "P1a", "P1b", "P1c", "P2", "P2[arbitrary]", "P2[inferable]"):
             self.assertEqual(v[key], "supported", key)
-        for key in ("P2", "P3", "P4"):
+        # P3 and P4 are estimated per stratum, with CIs, but carry no verdict.
+        self.assertEqual(set(descriptive_verdicts(result).values()), {"descriptive"})
+        for index in (2, 3):
             for label in ("arbitrary", "inferable"):
-                self.assertEqual(v[f"{key}[{label}]"], "supported", (key, label))
+                sub = stratum(result, index, label)
+                self.assertEqual(sub["estimate"], 0.0)
+                self.assertEqual(len(sub["ci95"]), 2)
         self.assertEqual(result["predictions"][3]["unidentified_count"], 0)
         p1a = result["predictions"][0]["components"][0]
         self.assertEqual(p1a["estimate"], 1.0)
@@ -293,20 +306,22 @@ class E1PredictionTests(unittest.TestCase):
         self.assertEqual(verdicts(result)["P2"], "falsified")
         self.assertEqual(stratum(result, 1, "arbitrary")["estimate"], 1.0)
 
-    def test_filler_effect_falsifies_p3(self):
+    def test_filler_effect_is_estimated_for_p3_without_a_verdict(self):
         def outcome(rng, task, decision, label, channel, filler, sib):
             return channel != "none" or filler
 
         result = analyze(e1_records(outcome), seed=1, n_boot=500)
-        self.assertEqual(verdicts(result)["P3"], "falsified")
+        self.assertEqual(verdicts(result)["P3"], "descriptive")  # was falsified before G2
+        self.assertEqual(stratum(result, 2, "arbitrary")["estimate"], 1.0)
+        self.assertEqual(stratum(result, 2, "arbitrary")["ci95"], [1.0, 1.0])
         self.assertEqual(verdicts(result)["P2"], "supported")
 
-    def test_spillover_falsifies_p4(self):
+    def test_spillover_is_estimated_for_p4_without_a_verdict(self):
         def outcome(rng, task, decision, label, channel, filler, sib):
             return channel != "none" or sib >= 0.5
 
         result = analyze(e1_records(outcome), seed=1, n_boot=500)
-        self.assertEqual(verdicts(result)["P4"], "falsified")
+        self.assertEqual(verdicts(result)["P4"], "descriptive")  # was falsified before G2
         self.assertEqual(stratum(result, 3, "arbitrary")["estimate"], 1.0)
 
     def test_moderate_gaps_are_inconclusive(self):
@@ -332,14 +347,15 @@ class E1PredictionTests(unittest.TestCase):
             return channel != "none"
 
         result = analyze(e1_records(outcome, n_tasks=1), seed=1, n_boot=200)
-        self.assertTrue(all(verdicts(result)[p] == "inconclusive" for p in ("P1", "P2", "P3", "P4")))
+        self.assertTrue(all(verdicts(result)[p] == "inconclusive" for p in ("P1", "P2")))
+        self.assertTrue(all(verdicts(result)[p] == "descriptive" for p in ("P3", "P4")))
         self.assertTrue(any("minimum bank" in w for w in result["warnings"]))
 
 
 class StrataTests(unittest.TestCase):
     """Regression (T5 review, finding 1): P2-P4 and P5(c) must hold in both the arbitrary and inferable strata."""
 
-    def test_inferable_only_effects_block_p2_p3_p4(self):
+    def test_inferable_only_effects_block_p2_and_show_in_p3_p4(self):
         def channel_gap(rng, task, decision, label, channel, filler, sib):
             if label == "inferable":
                 return channel in ("contract", "both", "none")
@@ -355,12 +371,15 @@ class StrataTests(unittest.TestCase):
                 return sib >= 0.5
             return perfect(rng, task, decision, label, channel, filler, sib)
 
-        for outcome, key in ((channel_gap, "P2"), (filler_gap, "P3"), (spillover, "P4")):
-            v = verdicts(analyze(e1_records(outcome), seed=1, n_boot=500))
-            self.assertEqual(v[f"{key}[arbitrary]"], "supported", key)
-            self.assertEqual(v[f"{key}[inferable]"], "falsified", key)
-            self.assertEqual(v[key], "falsified", key)
-            self.assertEqual(v["P1"], "supported", key)
+        v = verdicts(analyze(e1_records(channel_gap), seed=1, n_boot=500))
+        self.assertEqual((v["P2[arbitrary]"], v["P2[inferable]"], v["P2"]), ("supported", "falsified", "falsified"))
+        self.assertEqual(v["P1"], "supported")
+        for outcome, index in ((filler_gap, 2), (spillover, 3)):
+            result = analyze(e1_records(outcome), seed=1, n_boot=500)
+            self.assertEqual(stratum(result, index, "arbitrary")["estimate"], 0.0, index)
+            self.assertEqual(stratum(result, index, "inferable")["estimate"], 1.0, index)
+            self.assertEqual(set(descriptive_verdicts(result).values()), {"descriptive"})
+            self.assertEqual(verdicts(result)["P1"], "supported", index)
 
     def test_preserve_effects_are_descriptive_only(self):
         def outcome(rng, task, decision, label, channel, filler, sib):
@@ -381,11 +400,13 @@ class StrataTests(unittest.TestCase):
 
         result = analyze(e1_records(perfect, labels=labels), seed=1, n_boot=500)
         v = verdicts(result)
+        self.assertEqual(
+            (v["P2[arbitrary]"], v["P2[inferable]"], v["P2"]), ("supported", "inconclusive", "inconclusive")
+        )
         for key in ("P2", "P3", "P4"):
-            self.assertEqual(v[f"{key}[arbitrary]"], "supported", key)
-            self.assertEqual(v[f"{key}[inferable]"], "inconclusive", key)
-            self.assertEqual(v[key], "inconclusive", key)
             self.assertEqual(stratum(result, int(key[1]) - 1, "inferable")["n_tasks"], 1)
+        self.assertIn("insufficient data", stratum(result, 2, "inferable")["note"])
+        self.assertEqual(v["P3[inferable]"], "descriptive")
 
     def test_p4_unidentified_decision_blocks_support(self):
         # Regression (T5 review, finding 5): a decision missing an exposure side must stop P4 being supported.
@@ -403,11 +424,10 @@ class StrataTests(unittest.TestCase):
         p4 = result["predictions"][3]
         self.assertEqual(p4["unidentified_count"], 1)
         self.assertEqual(p4["components"][0]["unidentified_decisions"], {"arbitrary": ["task00/d0"], "inferable": []})
-        self.assertEqual(verdicts(result)["P4[arbitrary]"], "supported")
-        self.assertEqual(p4["verdict"], "inconclusive")
-        self.assertIn("cannot be supported", p4["components"][0]["note"])
+        self.assertEqual(p4["verdict"], "descriptive")
+        self.assertIn("1 decision(s) lack an exposure stratum", p4["components"][0]["note"])
 
-    def test_p4_unidentified_decision_still_allows_falsification(self):
+    def test_p4_unidentified_decisions_are_reported_with_the_estimate(self):
         def outcome(rng, task, decision, label, channel, filler, sib):
             return channel != "none" or sib >= 0.5
 
@@ -418,7 +438,65 @@ class StrataTests(unittest.TestCase):
                 chans["d0"] = "contract"
         result = analyze(records, seed=1, n_boot=500)
         self.assertEqual(result["predictions"][3]["unidentified_count"], 1)
-        self.assertEqual(verdicts(result)["P4"], "falsified")
+        self.assertEqual(verdicts(result)["P4"], "descriptive")
+        self.assertEqual(stratum(result, 3, "arbitrary")["estimate"], 1.0)
+
+
+class DescriptivePredictionTests(unittest.TestCase):
+    """User decision at gate G2: P3 and P4 are descriptive. They keep estimates, strata and CIs but are never
+    supported, falsified or inconclusive, and stay out of the verdict summary."""
+
+    def outcomes(self):
+        def filler(rng, task, decision, label, channel, filler, sib):
+            return channel != "none" or filler
+
+        def spillover(rng, task, decision, label, channel, filler, sib):
+            return channel != "none" or sib >= 0.5
+
+        return {"null": perfect, "filler": filler, "spillover": spillover, "noisy": bernoulli(0.9, 0.4)}
+
+    def test_p3_and_p4_are_never_supported_or_falsified(self):
+        for name, outcome in self.outcomes().items():
+            for n_tasks in (1, 12):
+                records = e1_records(outcome, n_tasks=n_tasks, seed=3)
+                tampered = [dict(r) for r in records]
+                tampered[0]["spec_files_intact"] = False
+                for status, result in (
+                    ("valid", analyze(records, seed=1, n_boot=200)),
+                    ("invalid", analyze(tampered, seed=1, n_boot=200)),
+                ):
+                    with self.subTest(name, n_tasks=n_tasks, status=status):
+                        self.assertEqual(result["status"], status)
+                        v = descriptive_verdicts(result)
+                        self.assertEqual(
+                            set(v), {"P3", "P3[arbitrary]", "P3[inferable]", "P4", "P4[arbitrary]", "P4[inferable]"}
+                        )
+                        self.assertEqual(set(v.values()), {"descriptive"}, v)
+                        for index in (2, 3):
+                            self.assertEqual(result["predictions"][index]["note"], analysis.DESCRIPTIVE_NOTE)
+                        self.assertNotIn("P3", result["verdict_summary"])
+                        self.assertNotIn("P4", result["verdict_summary"])
+                        self.assertEqual(result["descriptive_predictions"], ["P3", "P4"])
+                        markdown = analysis.to_markdown(result)
+                        for line in markdown.splitlines():
+                            if line.startswith(("| P3", "| P4")):
+                                self.assertTrue(line.endswith("| descriptive |"), line)
+
+    def test_summary_and_markdown_exclude_p3_and_p4(self):
+        result = analyze(e1_records(perfect), seed=1, n_boot=200)
+        self.assertEqual(result["analysis_version"], 5)
+        self.assertEqual(set(result["verdict_summary"]), {"P1", "P2", "P5", "P6"})
+        self.assertEqual(result["verdict_summary"]["P1"], "supported")
+        markdown = analysis.to_markdown(result)
+        summary = markdown.split("| Prediction | Verdict |", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("| P1 | supported |", summary)
+        self.assertNotIn("P3", summary)
+        self.assertNotIn("P4", summary)
+        self.assertIn("P3 and P4 are descriptive (decision at gate G2)", markdown)
+        self.assertIn("excluded from the verdict summary", markdown)
+        # Their estimates and CIs are still in the component table.
+        self.assertRegex(markdown, r"\| P3\[arbitrary\] \| \+0\.0 pp \| \[\+0\.0 pp, \+0\.0 pp\] \| 12 \|")
+        self.assertIn("| P4 (both strata) |", markdown)
 
 
 class InfrastructureTests(unittest.TestCase):
@@ -485,8 +563,9 @@ class InvalidRunTests(unittest.TestCase):
     def assert_invalid(self, result, reason):
         self.assertEqual(result["status"], "invalid")
         self.assertTrue(any(reason in f for f in result["validity"]["failed_gates"]), result["validity"])
-        v = verdicts(result)
+        v = confirmatory(result)
         self.assertEqual(set(v.values()), {"invalid"}, v)
+        self.assertEqual(set(descriptive_verdicts(result).values()), {"descriptive"})
         self.assertEqual(result["predictions"][0]["label"], "descriptive only: run invalid (§2.4)")
         self.assertEqual(result["predictions"][0]["components"][1]["estimate"], 1.0)  # numbers remain
         markdown = analysis.to_markdown(result)
@@ -557,7 +636,7 @@ class InvalidRunTests(unittest.TestCase):
         records[2]["confinement_signals"] = [{"kind": "absolute_path", "detail": "read: /etc/hostname"}]
         result = analyze(records, seed=1, n_boot=200)
         self.assertEqual(result["status"], "pending_review")
-        self.assertEqual(set(verdicts(result).values()), {"pending_review"})
+        self.assertEqual(set(confirmatory(result).values()), {"pending_review"})
         cleared = analyze(
             records, seed=1, n_boot=200, confinement_review={"signals_reviewed": 1, "confirmed_violations": 0}
         )
@@ -739,13 +818,13 @@ class DesignPopulationTests(unittest.TestCase):
             p4["components"][0]["unidentified_decisions"],
             {"arbitrary": ["task08/d0", "task08/d1"], "inferable": ["task08/d2", "task08/d3", "task08/d4"]},
         )
-        self.assertNotEqual(p4["verdict"], "supported")
+        self.assertEqual(p4["verdict"], "descriptive")
         # The counted observations alone (the old population) gave a 9-task test, p = 0.0195, and support.
         e1 = analysis.observations([r for r in records if not r["infrastructure_failure"]], "E1")[0]
         old = analysis.compute_p1(e1, 1, 200)["components"][0]
         self.assertAlmostEqual(old["sign_test_p_positive"], 10 / 512)
         self.assertEqual(old["verdict"], "supported")
-        self.assertEqual(analysis.compute_p4(e1, 1, 200)["verdict"], "supported")
+        self.assertEqual(analysis.compute_p4(e1, 1, 200)["verdict"], "descriptive")
 
     def test_unknown_labels_of_an_excluded_task_still_block_p4(self):
         records = [r for r in self.reviewer_run() if r["experiment"] == "E1"]
@@ -755,7 +834,8 @@ class DesignPopulationTests(unittest.TestCase):
         p4 = analysis.compute_p4(e1, 1, 200, planned)
         unidentified = p4["components"][0]["unidentified_decisions"]
         self.assertEqual(len(unidentified["unknown"]), 6)  # preserve may be any label once unknown
-        self.assertEqual(p4["verdict"], "inconclusive")
+        self.assertEqual(p4["unidentified_count"], sum(len(v) for v in unidentified.values()))
+        self.assertEqual(p4["verdict"], "descriptive")
 
     def test_labels_fall_back_to_the_bank(self):
         records = self.reviewer_run()
@@ -800,7 +880,7 @@ class DesignPopulationTests(unittest.TestCase):
         self.assertEqual(result["status"], "invalid")
         self.assertFalse(result["validity"]["gates"]["design_recorded"])
         self.assertTrue(any("design.json missing" in f for f in result["validity"]["failed_gates"]))
-        self.assertEqual(set(verdicts(result).values()), {"invalid"})
+        self.assertEqual(set(confirmatory(result).values()), {"invalid"})
 
     def test_records_off_design_invalidate(self):
         records = e1_records(perfect)

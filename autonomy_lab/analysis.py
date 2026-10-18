@@ -39,9 +39,13 @@ resolve what it leaves open, conservatively):
 - A decision missing from `decision_results` in a counted trial is scored as not satisfied (agent
   failures count against the condition) and counted under `missing_results`.
 - "Settled" means channel `contract`, `check` or `both`; "unsettled" means `none`.
+- P3 and P4 are descriptive (user decision at gate G2): their estimates, strata and CIs are computed as
+  described below, but every verdict they carry (prediction, component and stratum) is `descriptive`, never
+  supported, falsified or inconclusive, whatever the run status, and they are left out of the verdict summary
+  (`verdict_summary` and the Markdown prediction table). P1, P2, P5 and P6 keep their confirmatory verdicts.
 - Decision populations: P1 and P5(a)/(b) use `arbitrary` decisions. P2, P3, P4 and P5(c) are evaluated
-  separately in the `arbitrary` and `inferable` strata; such a component is supported only if it is
-  supported in both strata, falsified if it is falsified in either, and a stratum with fewer than 2
+  separately in the `arbitrary` and `inferable` strata; such a component (P2, P5(c)) is supported only if it
+  is supported in both strata, falsified if it is falsified in either, and a stratum with fewer than 2
   contributing tasks is inconclusive. `preserve` decisions are reported descriptively only.
 - P1(a): the per-task effect is the task's pooled settled rate minus its pooled unsettled rate over
   arbitrary decision observations. The sign test is an exact binomial (p = 1/2) over all E1 tasks; a task
@@ -54,8 +58,7 @@ resolve what it leaves open, conservatively):
   >= 0.6 minus rate at <= 0.4 among its `none` cells), averaged per task, then averaged across tasks.
   The sibling-check fraction uses every other decision in the trial. A planned decision of either stratum
   (or of unknown label) whose counted `none` cells lack either exposure side, including one with no counted
-  cell at all, is unidentified; it is counted and reported, and if any exists P4 cannot be supported (only
-  falsified or inconclusive).
+  cell at all, is unidentified; it is counted and reported alongside the descriptive P4 estimate.
 - P5 uses E2 records. Disclosure is read from an optional per-decision map in each record,
   `disclosed: {task_id: {decision_id: true|false}}`, written by the T6 judge; any value other than a JSON
   boolean counts as unjudged. P5(a)/(b) are means across
@@ -97,7 +100,10 @@ from pathlib import Path
 
 from autonomy_lab.judge import verify_audit
 
-ANALYSIS_VERSION = 4
+ANALYSIS_VERSION = 5
+# Predictions reported with estimates and CIs but no verdict (user decision at gate G2).
+DESCRIPTIVE_PREDICTIONS = ("P3", "P4")
+DESCRIPTIVE_NOTE = "descriptive only (decision at gate G2): estimates and CIs, no verdict"
 N_BOOT = 10_000
 SETTLED = ("contract", "check", "both")
 CHANNELS = ("none", "contract", "check", "both")
@@ -817,6 +823,17 @@ def compute_p1(obs, seed, n_boot=N_BOOT, planned=None):
 STRATA_RULE = "; per stratum (arbitrary, inferable): supported only if both are, falsified if either is"
 
 
+def descriptive(prediction):
+    """``prediction`` with every verdict (its own, its components' and their strata's) set to `descriptive`."""
+    prediction["verdict"] = "descriptive"
+    prediction["note"] = DESCRIPTIVE_NOTE
+    for c in prediction["components"]:
+        c["verdict"] = "descriptive"
+        for sub in (c.get("strata") or {}).values():
+            sub["verdict"] = "descriptive"
+    return prediction
+
+
 def compute_p2(obs, seed, n_boot=N_BOOT):
     rule = "contract-only minus check-only; supported: |d| < 0.10, CI within ±0.20; falsified: CI beyond ±0.20"
 
@@ -832,7 +849,7 @@ def compute_p2(obs, seed, n_boot=N_BOOT):
 
 
 def compute_p3(obs, seed, n_boot=N_BOOT):
-    rule = "unsettled, filler on minus off; supported: |d| < 0.10, CI within ±0.15; falsified: CI beyond ±0.15"
+    rule = "unsettled, filler on minus off, mean across tasks; descriptive (no verdict)"
 
     def make(label):
         rows = [o for o in obs if o.label == label and o.channel == "none"]
@@ -841,8 +858,8 @@ def compute_p3(obs, seed, n_boot=N_BOOT):
             f"P3[{label}]", values, n_boot, seed, ("abs_below", 0.10), ("abs_above", 0.15, False), rule
         )
 
-    comp = stratified("P3", rule + STRATA_RULE, make)
-    return {"id": "P3", "components": [comp], "verdict": combine([comp])}
+    comp = stratified("P3", rule + "; per stratum (arbitrary, inferable)", make)
+    return descriptive({"id": "P3", "components": [comp]})
 
 
 def p4_unidentified(obs, planned=None):
@@ -869,8 +886,8 @@ def p4_unidentified(obs, planned=None):
 
 def compute_p4(obs, seed, n_boot=N_BOOT, planned=None):
     rule = (
-        "`none` cells, sibling-check >= 0.6 minus <= 0.4 per decision, averaged per task; supported: |d| < 0.10, "
-        "CI within ±0.15; falsified: CI beyond ±0.15"
+        "`none` cells, sibling-check >= 0.6 minus <= 0.4 per decision, averaged per task, then across tasks; "
+        "descriptive (no verdict)"
     )
 
     def make(label):
@@ -879,15 +896,14 @@ def compute_p4(obs, seed, n_boot=N_BOOT, planned=None):
             f"P4[{label}]", values, n_boot, seed, ("abs_below", 0.10), ("abs_above", 0.15, False), rule
         )
 
-    comp = stratified("P4", rule + STRATA_RULE + "; not supported if any decision is unidentified", make)
+    comp = stratified("P4", rule + "; per stratum (arbitrary, inferable)", make)
     unidentified = p4_unidentified(obs, planned)
     count = sum(len(v) for v in unidentified.values())
     comp["unidentified_decisions"] = unidentified
     comp["unidentified_count"] = count
-    if count and comp["verdict"] == "supported":
-        comp["verdict"] = "inconclusive"
-        comp["note"] = f"{count} decision(s) lack an exposure stratum; P4 cannot be supported"
-    return {"id": "P4", "components": [comp], "verdict": combine([comp]), "unidentified_count": count}
+    if count:
+        comp["note"] = f"{count} decision(s) lack an exposure stratum"
+    return descriptive({"id": "P4", "components": [comp], "unidentified_count": count})
 
 
 def task_disclosure(obs, arm):
@@ -1134,9 +1150,12 @@ def author_split(p1, tasks_dir):
 
 def withhold(predictions, status):
     """Replace every prediction, component and stratum verdict by the run status (`invalid` or
-    `pending_review`); estimates stay, labelled descriptive only."""
+    `pending_review`); estimates stay, labelled descriptive only. P3 and P4 keep their `descriptive` verdict."""
     label = f"descriptive only: run {status} (§2.4)"
     for p in predictions:
+        if p["id"] in DESCRIPTIVE_PREDICTIONS:
+            p["label"] = label
+            continue
         p["verdict"] = status
         p["label"] = label
         for c in p["components"]:
@@ -1234,6 +1253,9 @@ def analyze(
         "infrastructure": infra,
         "warnings": warnings,
         "predictions": predictions,
+        # The overall verdicts: P3 and P4 are descriptive and never part of it.
+        "verdict_summary": {p["id"]: p["verdict"] for p in predictions if p["id"] not in DESCRIPTIVE_PREDICTIONS},
+        "descriptive_predictions": list(DESCRIPTIVE_PREDICTIONS),
         "descriptive": {"E1": descriptive_e1(e1)},
         "disclosures": merge,
         "disclosure_audit": audit_check,
@@ -1303,8 +1325,16 @@ def to_markdown(result):
         lines += [f"- {f}" for f in result["validity"]["failed_gates"]]
     lines += ["", "| Prediction | Verdict |", "|---|---|"]
     for p in result["predictions"]:
+        if p["id"] in DESCRIPTIVE_PREDICTIONS:
+            continue
         note = f" ({p['note']})" if p.get("note") else ""
         lines.append(f"| {p['id']} | {p['verdict']}{note} |")
+    lines += [
+        "",
+        f"{' and '.join(DESCRIPTIVE_PREDICTIONS)} are descriptive (decision at gate G2): their estimates, strata "
+        "and CIs are reported below with verdict `descriptive`; they are never supported or falsified and are "
+        "excluded from the verdict summary above.",
+    ]
     lines += ["", "| Component | Estimate | 95% CI | Tasks | Detail | Verdict |", "|---|---|---|---|---|---|"]
     for p in result["predictions"]:
         for c in p["components"]:

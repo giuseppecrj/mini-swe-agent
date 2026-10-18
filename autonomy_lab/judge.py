@@ -21,19 +21,15 @@ analysis.py merges `disclosed` into the matching trial records. Design choices:
   name of the decision's module, the decision's contract sentence presented as "the behaviour in question", the
   agent's final message and the unified diff of each task module against the bank's starter.py. It never sees
   the prompt, arm, channels, labels, visible or held-out checks.
-- Arm redaction is heuristic (redact_instruction_cues) and removes where an instruction came from, not what the
-  agent disclosed. A cue that itself frames the agent's text as assumptions (the E2 `assume` sentence wherever
-  it appears, quoted or wrapped, with its quotes and an instruction lead-in such as "You said:"; a clause such
-  as "You asked me to list my assumptions") becomes a neutral label: "You asked me to list assumptions, so X"
-  reads "Assumption: X", "X (you said: <sentence>)" reads "X (assumption)", and a cue heading a list or
-  paragraph reads "Assumptions:" unless that text already opens with such a flag. "Assumptions (as
-  requested):" and "the assumptions you asked for" keep "assumptions"; generic phrases such as "as requested"
-  are deleted, and since they flag nothing they never become a label, so no arm gains a flag it did not write.
-  The same rules apply to both arms, and text without a cue is unchanged byte for byte. The module text is
-  redacted on both sides before diffing, and a line left empty by a removal is dropped, so neither an empty
-  added comment nor a changed hunk shape remains. Residual risk: a paraphrased reference to the instruction,
-  or a final message that is visibly a list of assumptions, can still suggest the arm. The human audit
-  (Cohen's kappa) measures the judge's reliability on these inputs; it does not prove the blinding.
+- Arm redaction is minimal (redact_instruction_quote): it removes only a verbatim quotation of the E2 `assume`
+  sentence (ignoring letter case, with its enclosing quotation marks, a final full stop or not, and wrapped over
+  lines inside a quote or code comment with any whitespace), and drops a line that this leaves empty apart from
+  comment or quote markers. Every other character of the final message and the module is passed on unchanged,
+  and the same rule applies to both arms; the module is redacted on both sides before diffing. Instruction-origin
+  residue such as "you asked me to list assumptions", "as requested" or a "You said:" lead-in is left in place,
+  because rewriting it heuristically was shown to invent some disclosures and drop others. The judge may
+  therefore sometimes infer the arm; this is a stated limitation of P5. The human audit (Cohen's kappa) measures
+  the judge's reliability on these inputs; it does not prove the blinding.
 - Evidence must be complete before anything is scored. The final message is the text blocks of the last
   assistant `message_end` (thinking and tool calls excluded), read only from a complete event log: every line
   a well-formed event, ending in a non-aborted `agent_settled`, with no assistant message left open, no prompt
@@ -99,7 +95,7 @@ from autonomy_lab.pi_runner import (
 )
 from autonomy_lab.taskbank import load_bank_with_hash, read_module
 
-JUDGE_VERSION = 2
+JUDGE_VERSION = 3
 AUDIT_VERSION = 2
 DEFAULT_MODEL = "xai/grok-4.7"
 DEFAULT_THINKING = "medium"
@@ -115,87 +111,24 @@ SELFTEST_MIN_AGREEMENT = 10
 PLACEHOLDERS = re.compile(r"\{(NONCE|MODULE|BEHAVIOUR|FINAL_MESSAGE|DIFF)\}")
 FENCE = re.compile(r"```(?:json)?[ \t]*\n?(.*?)\n?[ \t]*```", re.DOTALL)
 
-# ---- arm redaction (heuristic; see the module docstring). Until cleanup, "\x00" marks a removed cue and "\x01" a
-# removed cue that flagged the agent's own text as assumptions; cleanup renders the latter as a neutral label.
-_CUT, _FLAG = "\x00", "\x01"
+# ---- arm redaction (minimal; see the module docstring). Only a verbatim quotation of the E2 `assume` sentence is
+# removed. Between its words a quotation may wrap onto a new line, which may open with a comment ("#") or Markdown
+# quote (">") marker; its final full stop is optional.
 _QUOTE = "\"'`“”‘’«»"
-# Between the words of a quoted or wrapped copy: whitespace, comment, quote and Markdown markers, punctuation.
-_WORD_GAP = r"[\s#>*,;:" + _QUOTE + r"]+"
-_ARM_WORDS = {"behaviour": r"behaviou?r", "did": r"did", "not": r"(?:not|n['’]t)"}
+_WRAP = r"(?:[ \t]*\n[ \t]*(?:#+|(?:>[ \t]*)+)?[ \t]*|[ \t]+)"
 
 
-def _arm_pattern(sentence):
-    words = re.findall(r"[a-z]+", sentence.lower())
-    body = _WORD_GAP.join(_ARM_WORDS[w] if w in _ARM_WORDS else re.escape(w) for w in words).replace(
-        r"did" + _WORD_GAP + r"(?:not|n['’]t)", r"did(?:" + _WORD_GAP + r"not|n['’]t)"
-    )
-    return re.compile(rf"[{_QUOTE}]*{body}[.!]?[{_QUOTE}]*", re.IGNORECASE)
+def _quotation_pattern(sentence):
+    words = [re.escape(w) for w in sentence.split()]
+    words[-1] = words[-1].removesuffix(r"\.") + r"\.?"
+    body = _WRAP.join(words)
+    # Quotation marks are part of the quotation only when they enclose it on both sides.
+    return re.compile(rf"[{_QUOTE}]+{body}[{_QUOTE}]+|{body}", re.IGNORECASE)
 
 
-ARM_SENTENCE = _arm_pattern(ASSUME_SENTENCE)
-# Who or what gave an instruction: "you asked", "I was told", "the prompt says", "your request", ...
-_REF = (
-    r"(?:(?:as|since|because|and|per)\s+)?"
-    r"(?:(?:you|the\s+(?:task|prompt|instructions?|brief|request|user)|your\s+(?:instructions?|prompt|request|"
-    r"message|brief)|i\s+was|we\s+were|i(?:'ve|\s+have)\s+been|instructions?)\s+(?:also\s+)?"
-    r"(?:asked|asks?|requested|requests?|instructed|instructs?|told|tells?|wanted|wants?|required|requires?|said|"
-    r"says?|directed|would\s+like|want)"
-    r"|(?:the|your)\s+(?:instruction|request))"
-)
-_LIST = (
-    r"(?:list|state|note|mention|include|report|give|describe|call\s+out|flag|share|spell\s+out|document|"
-    r"enumerate|summari[sz]e|write\s+down|provide|outline|set\s+out|record)"
-)
-_GAP = r"[^\n.!?:]{0,40}?"
-# Cues that themselves flag what follows (or precedes) as the agent's assumptions. Each becomes _FLAG, so the
-# flag survives as a neutral label ("Assumption:", "Assumptions:", "(assumption)") without its origin.
-_FLAG_CUES = [
-    # A lead-in naming the instruction right before a copy of the arm sentence: "You said: <arm>", "As asked: <arm>".
-    re.compile(rf"\b{_REF}\b[^\n.!?{_CUT}{_FLAG}]{{0,20}}?{_FLAG}", re.IGNORECASE),
-    re.compile(
-        rf"\b(?:(?:as|per)\s+(?:the|your)\s+)?(?:instructions?|prompt|request|task)\s*[:,]\s*{_FLAG}", re.IGNORECASE
-    ),
-    re.compile(
-        rf"\b(?:as|per)\s+(?:you\s+)?(?:asked|requested|instructed|said)\b[\s,:(\[{_QUOTE}]*{_FLAG}", re.IGNORECASE
-    ),
-    # "You asked me to list my assumptions", "I was told to state any assumptions, so", with their connective.
-    re.compile(rf"\b{_REF}\b{_GAP}\b{_LIST}\b{_GAP}\bassumptions?\b(?:[ \t]*(?:,|;|\bso\b|\band\b))*", re.IGNORECASE),
-]
-# "Here are the assumptions you asked for:", "Assumptions (as requested):": only the origin goes, the word stays.
-_ORIGIN_AFTER_ASSUMPTIONS = re.compile(
-    r"(\bassumptions?\b)[ \t]*\(?[ \t]*(?:that\s+|which\s+)?(?:you\s+(?:asked|requested|wanted)"
-    r"(?:\s+(?:for|me\s+to\s+\w+))?|(?:as\s+)?(?:requested|asked(?:\s+for)?|instructed)|per\s+your\s+"
-    r"(?:request|instructions?))\b[ \t]*\)?",
-    re.IGNORECASE,
-)
-# Remaining generic instruction-origin phrases, deleted with one adjoining comma: "As requested,", "Per your
-# instructions:". They carry no flag, so nothing replaces them.
-_ORIGIN = re.compile(
-    r"(?:[ \t]*,)?[ \t]*\b(?:(?:as|per)\s+(?:you\s+)?(?:asked|requested|instructed|said)|as\s+(?:was\s+)?"
-    r"(?:requested|instructed)|per\s+(?:your|the)\s+(?:request|instructions?|prompt)|in\s+(?:my|this)\s+final\s+"
-    r"message)\b[ \t]*[,:]?",
-    re.IGNORECASE,
-)
-# What a line may still hold after a removal and count as empty: indentation, comment, quote, Markdown and
-# list markers, and punctuation.
-_EMPTYISH = re.compile(r"^[\s#>*_+\-:;,.()\[\]" + _QUOTE + r"]*$")
-_LINE_PREFIX = re.compile(r"[ \t]*(?:(?:#+|>+|[-*+]|\d+[.)])[ \t]+)?")
-_LIST_ITEM = re.compile(r"[ \t]*(?:#+[ \t]*)?(?:[-*+]|\d+[.)])[ \t]+\S")
-# A line that already opens with an assumption flag, so a label in front of it would only repeat it.
-_FLAGGED_START = re.compile(
-    r"[\s#>*_+\-]*(?:\d+[.)][ \t]*)?(?:(?:my|the|any|some|key|other|main)\s+)?assumptions?\b"
-    r"|[\s#>*_+\-]*(?:\d+[.)][ \t]*)?i\s+(?:assumed|assume|chose|went\s+with|picked|decided)\b",
-    re.IGNORECASE,
-)
-# The rest of a flagging clause that only introduces what follows: "here they are:", "as follows:", "below.".
-_INTRODUCER = re.compile(
-    r"(?:(?:here|they|these|those|them|it|is|are|was|were|which|as|follows|below|goes|the|list|i|made|have|so)"
-    r"\b[\s,]*)*[:.]?",
-    re.IGNORECASE,
-)
-# Between a flag and the text after it: closing quotes or brackets, one punctuation mark, a dash.
-_FLAG_TAIL = re.compile(r"[\s)\]" + _QUOTE + r"]*([.!?:;,]?)[\s" + _QUOTE + r"]*(?:(?:--?|[—–])[ \t]+)?")
-_TOPIC = re.compile(r"(?:about|for|on|regarding|concerning|in|of)\b[^.!?]*:", re.IGNORECASE)
+ARM_QUOTATION = _quotation_pattern(ASSUME_SENTENCE)
+# A line that holds nothing but indentation, comment markers and Markdown quote markers.
+_EMPTY_LINE = re.compile(r"[ \t#>]*")
 
 
 class JudgeCallError(RuntimeError):
@@ -318,130 +251,36 @@ def final_message(events_path):
     return message_text(final), None
 
 
-def redact_instruction_cues(text, code=False):
-    """(text, removed): ``text`` with the E2 `assume` sentence and other instruction-origin cues removed, keeping
-    the meaning of any disclosure they framed.
+def redact_instruction_quote(text):
+    """(text, removed): ``text`` without verbatim quotations of the E2 `assume` sentence (ARM_QUOTATION).
 
-    Heuristic (see the module docstring). A cue that itself flags the agent's text as assumptions (a copy of the
-    arm sentence, quoted or wrapped, with its quotes and an instruction lead-in; "You asked me to list my
-    assumptions") is replaced by a neutral label: "Assumption: X" when it introduces X on its line, "X
-    (assumption)" when it follows X, and an "Assumptions:" heading when it stands alone on a line before more
-    text (in code (``code``): before a comment of the same block or a list item), unless that text already opens
-    with such a flag; otherwise it is dropped. "assumptions you asked for" and "assumptions (as requested)" keep
-    "assumptions". Generic phrases such as "as requested" are deleted. A line that a removal leaves empty (only
-    indentation, comment, quote or list markers and punctuation) is dropped, and a code comment it leaves empty is
-    removed from its line; other lines are only tidied. The same rules apply to every arm."""
-    text, removed = ARM_SENTENCE.subn(_FLAG, text)
-    for pattern in _FLAG_CUES:
-        text, count = pattern.subn(_FLAG, text)
-        removed += count
-    text, count = _ORIGIN_AFTER_ASSUMPTIONS.subn(r"\1", text)
-    removed += count
-    text, count = _ORIGIN.subn(_CUT, text)
-    removed += count
-    if not removed:
+    Every other character is kept, including any lead-in such as "You said:" and any other reference to the
+    instruction. A line that the removal leaves empty except for indentation, comment or Markdown quote markers is
+    dropped with its line break; any other line keeps what remains of it. The same rule applies to every arm and
+    to final messages and code alike."""
+    if not ARM_QUOTATION.search(text):
         return text, 0
-    marks = _CUT + _FLAG
-    source = text.split("\n")
+    mark = next(chr(c) for c in range(0xE000, 0xF900) if chr(c) not in text)
+    text, removed = ARM_QUOTATION.subn(mark, text)
     lines = []
-    for number, line in enumerate(source):
-        if _CUT not in line and _FLAG not in line:
-            lines.append(line)
-            continue
-        # A removed cue in brackets takes its brackets along; adjacent removals merge (a flag wins).
-        line = re.sub(rf"[(\[][\s,;:{marks}{_QUOTE}]*[{marks}][\s,;:{marks}{_QUOTE}]*[)\]]", _merge_marks, line)
-        line = re.sub(rf"[{marks}](?:[\s,;:]*[{marks}])+", _merge_marks, line)
-        following = next((s for s in source[number + 1 :] if s.strip()), None)
-        line = _render_flags(line, following, code)
-        if line is None or _EMPTYISH.match(line.replace(_CUT, "")):
-            continue
-        if _CUT in line:
-            line = _tidy_cut(line)
+    for line in text.split("\n"):
+        if mark in line:
+            line = line.replace(mark, "")
+            if _EMPTY_LINE.fullmatch(line):
+                continue
         lines.append(line)
     return "\n".join(lines), removed
-
-
-def _merge_marks(match):
-    return _FLAG if _FLAG in match.group(0) else _CUT
-
-
-def _always(pattern, text):
-    """``pattern.match(text)`` for a pattern that matches every string (each of its parts is optional)."""
-    match = pattern.match(text)
-    assert match is not None
-    return match
-
-
-def _render_flags(line, following, code):
-    """``line`` with each _FLAG replaced by its neutral label (redact_instruction_cues), or None to drop it."""
-    while _FLAG in line:
-        at = line.index(_FLAG)
-        prefix = _always(_LINE_PREFIX, line[:at]).group(0)
-        before = line[len(prefix) : at].replace(_CUT, " ").rstrip(" \t,;—–" + _QUOTE)
-        before = "" if _EMPTYISH.match(before) else before
-        tail = _always(_FLAG_TAIL, line[at + 1 :])
-        punct, rest = tail.group(1), line[at + 1 + tail.end() :]
-        rest = "" if _EMPTYISH.match(rest.replace(_CUT, "")) else rest
-        if before and not before.endswith(tuple(".!?:")):
-            if before.rstrip().endswith("#") and not rest:
-                # Only the cue was in this comment: the comment goes.
-                return prefix + before.rstrip().rstrip("#").rstrip()
-            after = (punct if punct in ".!?:;," else "") + (" " + rest if rest else "")
-            line = prefix + before + " (assumption)" + after
-            continue
-        if rest and not (_INTRODUCER.fullmatch(rest.strip()) or _TOPIC.fullmatch(rest.strip())):
-            label = "" if _FLAGGED_START.match(rest) else "Assumption: "
-            line = prefix + (before + " " if before else "") + label + rest
-            continue
-        # A heading: it labels the text that follows, if there is any to label.
-        topic = rest.strip()[:-1] if rest and _TOPIC.fullmatch(rest.strip()) else ""
-        label = "Assumptions" + (" " + topic if topic else "") + ":"
-        if not _heads(following, prefix, code):
-            label = ""
-        if before:
-            line = prefix + before + (" " + label if label else "")
-        elif label:
-            line = re.sub(r">+[ \t]*", "", prefix) + label
-        else:
-            return None
-    return line
-
-
-def _heads(following, prefix, code):
-    """Whether a flag standing alone on a line labels ``following``, the next non-blank line."""
-    if following is None or _FLAG in following:
-        return False
-    content = following.replace(_CUT, "")
-    if _FLAGGED_START.match(content) or _EMPTYISH.match(content):
-        return False
-    if not code:
-        return True
-    if "#" in prefix:
-        return re.match(r"[ \t]*#", content) is not None
-    return _LIST_ITEM.match(content) is not None
-
-
-def _tidy_cut(line):
-    """A line with deleted generic cues (_CUT), tidied: its marker kept, spacing and a sentence start repaired."""
-    indent = _always(_LINE_PREFIX, line[: line.index(_CUT)]).group(0)
-    starts = line[len(indent) :].startswith(_CUT)
-    rest = re.sub(r"^[\s,;:" + _QUOTE + r"]+", "", line[len(indent) :].replace(_CUT, " "))
-    rest = re.sub(r"[ \t]+([,.;:!?])", r"\1", re.sub(r"[ \t]{2,}", " ", rest))
-    rest = re.sub(r"[,;]([:.!?])", r"\1", rest)
-    if starts and rest[:1].islower():
-        rest = rest[0].upper() + rest[1:]
-    return indent + re.sub(r"\s*#\s*$", "", rest).rstrip()
 
 
 def module_diff(module, starter, source):
     """Unified diff of one task module: the bank's starter against the agent's final file (bytes or None).
 
-    Both sides are redacted (redact_instruction_cues) before diffing, so a removed cue leaves no hunk of its
-    own. Returns (diff, removed)."""
+    Both sides are redacted (redact_instruction_quote) before diffing, so a removed quotation leaves no hunk of
+    its own. Returns (diff, removed)."""
     if source is None:
         return f"({module}: no readable module in the workspace)\n", 0
-    before, _ = redact_instruction_cues(starter, code=True)
-    after, removed = redact_instruction_cues(source.decode("utf-8", errors="replace"), code=True)
+    before, _ = redact_instruction_quote(starter)
+    after, removed = redact_instruction_quote(source.decode("utf-8", errors="replace"))
     if after == before:
         return f"({module}: unchanged from the starting code)\n", removed
 
@@ -485,17 +324,18 @@ def blinded_fields(final_message, modules):
     """(final_message, diff, info) for the judge: the final message and the diffs of ``modules``
     [(module, starter, source bytes or None)], redacted and capped. info["truncated"] names a field that was cut,
     in which case the decision must not be judged."""
-    final_message, removed_message = redact_instruction_cues(final_message)
+    final_message, removed_message = redact_instruction_quote(final_message)
     diffs, removed_diff = [], 0
     for module, starter, source in modules:
         diff, removed = module_diff(module, starter, source)
         diffs.append(diff)
         removed_diff += removed
-    final_message = re.sub(r"\n{3,}", "\n\n", final_message).strip() or "(no final message)"
+    if not final_message.strip():
+        final_message = "(no final message)"
     final_message, message_cut = cap(final_message)
     diff, diff_cut = cap("\n".join(diffs))
     info = {
-        "instruction_cues_removed": removed_message + removed_diff,
+        "instruction_quotes_removed": removed_message + removed_diff,
         "final_message_truncated": message_cut,
         "diff_truncated": diff_cut,
     }
