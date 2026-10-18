@@ -18,7 +18,29 @@ Or open a persistent local Pi coordinator inside Herdr from the autonomy_lab dir
 
     pi @SESSION_HANDOFF.md "Continue the migrated Autonomy Lab session, run offline checks, then run one bounded real Pi trial and report observed results."
 
-**Be precise:** the cloud workflow used a mock agent for its eight treatment cells and built/starter-checked the Docker image; it did not measure real-model performance. The local Pi benchmark is executed with the user's host privileges, NOT a sandbox; use only the trusted built-in toy tasks. Local trajectories are ignored by git and must not be committed. A Pi CLI running on a local computer may still call a remote model provider.
+**Be precise:** the cloud workflow used a mock agent for its eight treatment cells and built/starter-checked the Docker image; it did not measure real-model performance. The original 2×2×2 Pi mode runs with the user's host privileges, NOT in a sandbox; use only the trusted built-in toy tasks. Local trajectories are ignored by git and must not be committed. A Pi CLI running on a local computer may still call a remote model provider.
+
+## Task-bank experiments (LOOP_SPEC.md)
+
+The pre-registered E1–E3 experiments use the task bank in `tasks/` and a separate runner mode. Each trial gets a seeded, balanced design: every decision is settled by a contract sentence, a visible check, both, or neither. Each decision is graded by its own held-out check.
+
+    python3 -m autonomy_lab.taskbank validate autonomy_lab/tasks      # mechanical bank validation (sandboxed grading)
+    python3 -m autonomy_lab.confine selftest                         # confinement probes
+    python3 -m autonomy_lab.pi_runner --model openai-codex/gpt-5.6-sol --thinking high \
+      --task-bank autonomy_lab/tasks --experiment T7 --design-seed 1 --timeout 600
+    python3 -m autonomy_lab.analysis <run_dir> --tasks-dir autonomy_lab/tasks
+
+Safety defaults in this mode:
+
+- **Confined Pi:** Pi runs under a bubblewrap profile that hides `$HOME`, the repository, Pi sessions and other runs. A seccomp filter blocks Unix and vsock sockets and io_uring, and the credentials file is mounted read-only.
+- **Token refresh:** the host refreshes the model token before every attempt.
+- **Grading:** each check runs in its own network-less sandbox, holding only a copy of the designated module, and passes only with a per-check completion token.
+- **Results location:** results go to `$XDG_STATE_HOME/autonomy-lab` (or `~/.local/state/autonomy-lab`), outside the checkout.
+- **Test-only flags:** `--unconfined-pi-for-tests` and `--unconfined-grading-for-tests` exist for tests only.
+
+This is leakage prevention for trusted tasks, not a hardened multi-tenant sandbox. The agent can still read its own model credentials.
+
+Other modules: `design.py` (designs, prompts, visible checks), `analysis.py` (P1–P6 with the §3.2 verdict rules), `power.py` (power simulation). Pre-registrations and the G2 brief are in `experiments/`.
 
 ---
 
