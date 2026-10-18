@@ -168,6 +168,8 @@ H4 is supported only if P6 is supported at both breadths. It is falsified if P6 
 - **P3 and P4 are descriptive in E1.** Estimates, strata and CIs are reported without a verdict, because the T5 power simulation puts their support probability near 1% at any affordable size.
 - **The T6 judge uses minimal redaction.** Only a verbatim quotation of the E2 `assume` instruction is removed. Instruction-origin residue such as "you asked me to list assumptions" stays visible to the judge, and that is a stated limitation of P5.
 - **The post-round-3 task-bank patch `8e08636` is kept.**
+- **Labels of the 9 coordinator tasks are approved blind.** The coordinator writes the 3 remaining tasks; they get the same audit and their own blind label approval. Every task is coordinator-authored, so the authorship comparison is dropped, and coordinator authorship is a stated threat to validity.
+- **E3 is deferred to G3.** It will be decided after E1's results and, if run, sized for joint H4 power.
 
 **Authorship (descriptive only):** if you author any tasks (D3), P1's per-task effects are also reported separately for your tasks and the coordinator's. With so few tasks, no test is run.
 

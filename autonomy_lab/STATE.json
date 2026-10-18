@@ -120,8 +120,9 @@
     }
   },
   "next_actions": [
-    "User: blind label approval (tasks/LABELS.md); 3 user tasks; G2 decisions in experiments/G2_BRIEF.md; G4 budget",
-    "Coordinator: integrate T6 judge after review; then T8 calibration once labels are approved; freeze the bank; finalize experiments/E1.md; run E1"
+    "Draft + audit 3 more tasks; user blind label approval for them",
+    "T8 on all 12, bank-level gate, freeze bank (hash), finalize experiments/E1.md",
+    "Run E1 (192 trials); G3 review; then E2 (288) and the E3 decision"
   ],
   "constraints": [
     "No main-branch modifications without explicit instruction",
@@ -151,7 +152,7 @@
   },
   "loop": {
     "gate": "G1 approved",
-    "current_stage": "harness T1-T5 merged and reviewed; T7 passed; T6 judge in progress; waiting on the user for the G2 decisions",
+    "current_stage": "labels of 9 tasks approved; drafting 3 more coordinator tasks; T8 calibration on the 9 approved tasks",
     "budget_used": {
       "benchmark_trials": 8,
       "review_sessions": 15,

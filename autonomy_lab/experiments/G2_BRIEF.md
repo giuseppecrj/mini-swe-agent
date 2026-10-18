@@ -1,6 +1,6 @@
 # Gate G2 decision brief
 
-**Status:** prepared 2026-10-17 by the coordinator. **Decided by the user on 2026-10-18:** P3/P4 descriptive (§3); T6 minimal redaction, option (a); keep `8e08636`; commit and push. **Also decided on 2026-10-18 (G4):** budget by trial counts, not dollars; T8 + E1 now; E2 at 288 after E1. Still open: E3 (§5), blind label approval and the extra tasks (§1).
+**Status:** prepared 2026-10-17 by the coordinator. **Decided by the user on 2026-10-18:** P3/P4 descriptive (§3); T6 minimal redaction, option (a); keep `8e08636`; commit and push. **Also decided on 2026-10-18 (G4):** budget by trial counts, not dollars; T8 + E1 now; E2 at 288 after E1. **Also decided on 2026-10-18:** labels of the 9 tasks approved blind; the coordinator writes all remaining tasks (3 more, to reach 12; the authorship comparison is dropped); E3 deferred to G3, to be decided with E1's results and sized for joint H4 power (about 700–960 trials) if run.
 **Evidence:**
 - power simulations: `autonomy_lab/results/power-t5-05c93d5/`;
 - T7 plumbing run `run-20261017T162631Z-97ecc5` (local; per-decision results withheld until blind label approval);

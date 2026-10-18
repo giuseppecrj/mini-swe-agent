@@ -1,4 +1,6 @@
-# Proposed decision labels (coordinator draft, revised after two T4 audits, for G2 approval)
+# Decision labels (coordinator draft, revised after the T4 audits)
+
+**Approved by the user on 2026-10-18 for the 9 coordinator tasks below, as proposed, without seeing any agent results** (D3, G2). Labels for tasks added later need their own blind approval.
 
 Approve, change or reject each label **before seeing any agent results**
 (D3, §3.3). The labels mean:
