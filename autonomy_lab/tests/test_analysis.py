@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 import autonomy_lab.analysis as analysis
+import autonomy_lab.judge as judge
 from autonomy_lab.power import generate_design
 
 LABELS = {
@@ -877,6 +878,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
             write_run(run, records)
+            # A bare kappa that is not bound to any judged population is not used (review finding 1).
             (run / "disclosure_audit.json").write_text(json.dumps({"kappa": 0.75}), encoding="utf-8")
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
@@ -884,7 +886,10 @@ class CliTests(unittest.TestCase):
             result = json.loads((run / "analysis.json").read_text(encoding="utf-8"))
             markdown = (run / "analysis.md").read_text(encoding="utf-8")
         self.assertEqual(result["seed"], 4)
-        self.assertEqual(result["predictions"][4]["kappa"], 0.75)
+        self.assertIsNone(result["predictions"][4]["kappa"])
+        self.assertEqual(result["predictions"][4]["verdict"], "inconclusive")
+        self.assertIn("not a version-2 audit", result["predictions"][4]["note"])
+        self.assertFalse(result["disclosure_audit"]["verified"])
         self.assertEqual(len(result["input_sha256"]), 64)
         self.assertEqual(len(result["design_sha256"]), 64)
         self.assertIn("| P1 | supported |", markdown)
@@ -930,6 +935,200 @@ class CliTests(unittest.TestCase):
             (Path(tmp) / "trials.jsonl").write_text("{not json\n", encoding="utf-8")
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 analysis.main([tmp])
+
+
+def judged_e2(n_tasks=12):
+    """E2 records with trial ids, and the judge's disclosures.jsonl lines carrying their `disclosed` maps."""
+    records = e2_records(0.0, 1.0, satisfied=lambda rng, arm: True, n_tasks=n_tasks)
+    lines = []
+    for r in records:
+        r["trial_id"] = f"t{r['seed']}"
+        lines.append({"trial_id": r["trial_id"], "attempt": 1, "disclosed": r.pop("disclosed"), "judge_model": "j"})
+    return records, lines
+
+
+def bound_audit(lines, seed=0, human=lambda entry: entry["judge"]):
+    """A complete disclosure audit bound to ``lines``; by default the human agrees with the judge (kappa 1)."""
+    audit = judge.new_audit(lines, seed)
+    for entry in audit["sample"]:
+        entry["human"] = human(entry)
+    return judge.finish_audit(audit)
+
+
+class DisclosureMergeTests(unittest.TestCase):
+    def test_judge_lines_drive_p5_like_inline_judgements(self):
+        records, lines = judged_e2()
+        merged = analyze(records, seed=1, n_boot=300, disclosures=lines, audit=bound_audit(lines))
+        inline = analyze(
+            [{**r, "disclosed": line["disclosed"]} for r, line in zip(records, lines)], seed=1, kappa=0.8, n_boot=300
+        )
+        self.assertEqual(merged["status"], "valid")
+        self.assertEqual(merged["disclosure_audit"], {"verified": True, "kappa": 1.0, "problem": None})
+        self.assertEqual(merged["predictions"][4], {**inline["predictions"][4], "kappa": 1.0})
+        self.assertEqual(verdicts(merged)["P5"], "supported")
+        self.assertEqual((merged["disclosures"]["merged_records"], merged["disclosures"]["conflicts"]), (96, 0))
+        self.assertTrue(merged["validity"]["gates"]["disclosures_agree"])
+        self.assertNotIn("disclosed", records[0])  # the caller's records are not modified
+
+    def test_without_a_judge_file_nothing_changes(self):
+        records, _ = judged_e2()
+        result = analyze(records, seed=1, kappa=0.8, n_boot=200)
+        self.assertIsNone(result["disclosures"])
+        self.assertEqual(verdicts(result)["P5"], "inconclusive")  # nothing judged
+
+    def test_agreeing_record_judgements_are_kept(self):
+        records, lines = judged_e2()
+        records[0]["disclosed"] = json.loads(json.dumps(lines[0]["disclosed"]))
+        task = records[1]["task_ids"][0]
+        records[1]["disclosed"] = {task: {"d0": lines[1]["disclosed"][task]["d0"]}}  # a subset agrees too
+        result = analyze(records, seed=1, n_boot=200, disclosures=lines, audit=bound_audit(lines))
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual(verdicts(result)["P5"], "supported")
+
+    def test_disagreement_invalidates_the_run(self):
+        records, lines = judged_e2()
+        task = records[0]["task_ids"][0]
+        own = json.loads(json.dumps(lines[0]["disclosed"]))
+        own[task]["d0"] = not own[task]["d0"]
+        records[0]["disclosed"] = own
+        result = analyze(records, seed=1, n_boot=200, disclosures=lines, audit=bound_audit(lines))
+        self.assertEqual(result["status"], "invalid")
+        self.assertFalse(result["validity"]["gates"]["disclosures_agree"])
+        self.assertEqual(verdicts(result)["P5"], "invalid")
+        self.assertTrue(
+            any("disclosures.jsonl disagrees" in f for f in result["validity"]["failed_gates"]), result["validity"]
+        )
+        self.assertIn(f"t0-a1 {task}/d0", result["disclosures"]["conflict_examples"][0])
+
+    def test_other_conflicts_invalidate_the_run(self):
+        task = "task00"
+        cases = {
+            "null vs judged": lambda records, lines: records[0].update(disclosed={task: {"d0": None}}),
+            "record map malformed": lambda records, lines: records[0].update(disclosed="malformed"),
+            "two lines differ": lambda records, lines: lines.append(
+                {**lines[0], "disclosed": {task: {"d0": not lines[0]["disclosed"][task]["d0"]}}}
+            ),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                records, lines = judged_e2()
+                mutate(records, lines)
+                result = analyze(records, seed=1, n_boot=100, disclosures=lines, audit=bound_audit(lines))
+                self.assertEqual(result["status"], "invalid")
+                self.assertGreaterEqual(result["disclosures"]["conflicts"], 1)
+
+    def test_unjudged_lines_leave_p5_inconclusive(self):
+        records, lines = judged_e2()
+        task = records[0]["task_ids"][0]
+        lines[0]["disclosed"][task]["d0"] = None
+        result = analyze(records, seed=1, n_boot=200, disclosures=lines, audit=bound_audit(lines))
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual(verdicts(result)["P5"], "inconclusive")
+        self.assertEqual(result["predictions"][4]["unjudged_decisions"], 1)
+
+    def test_matching_uses_trial_id_and_attempt(self):
+        records, lines = judged_e2()
+        lines[0] = {**lines[0], "attempt": 2}
+        lines.append({"trial_id": "nowhere", "attempt": 1, "disclosed": {}})
+        result = analyze(records, seed=1, n_boot=100, disclosures=lines, audit=bound_audit(lines))
+        self.assertEqual(result["disclosures"]["unmatched_lines"], 2)
+        self.assertEqual(result["disclosures"]["merged_records"], 95)
+        self.assertEqual(result["predictions"][4]["unjudged_decisions"], 2)  # record t0's two arbitrary decisions
+        self.assertTrue(any("match no trial record" in w for w in result["warnings"]))
+
+    def test_malformed_line_is_rejected(self):
+        records, lines = judged_e2()
+        lines[0]["disclosed"] = ["not", "a", "map"]
+        with self.assertRaisesRegex(ValueError, "disclosures.jsonl:1"):
+            analyze(records, seed=1, n_boot=100, disclosures=lines)
+
+    def test_cli_merges_disclosures_jsonl(self):
+        records, lines = judged_e2(n_tasks=10)
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            write_run(run, records)
+            audit = bound_audit(lines)
+            (run / "disclosure_audit.json").write_text(json.dumps(audit), encoding="utf-8")
+            (run / "disclosures.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
+            trials_before = (run / "trials.jsonl").read_bytes()
+            with contextlib.redirect_stdout(io.StringIO()):
+                analysis.main([str(run), "--n-boot", "200"])
+            result = json.loads((run / "analysis.json").read_text(encoding="utf-8"))
+            self.assertEqual((run / "trials.jsonl").read_bytes(), trials_before)
+        self.assertEqual(result["predictions"][4]["unjudged_decisions"], 0)
+        self.assertEqual(result["predictions"][4]["kappa"], 1.0)
+        self.assertEqual(result["predictions"][4]["verdict"], "supported")
+        self.assertEqual(len(result["disclosures_sha256"]), 64)
+        self.assertEqual(len(result["disclosure_audit_sha256"]), 64)
+        self.assertEqual(result["disclosures"]["merged_records"], 80)
+
+
+class AuditVerificationTests(unittest.TestCase):
+    """Review finding 1: kappa is used only from an audit bound to the current judged population."""
+
+    def p5(self, records, lines, audit):
+        result = analyze(records, seed=1, n_boot=200, disclosures=lines, audit=audit)
+        return result["predictions"][4], result
+
+    def test_an_audit_of_a_small_population_does_not_unlock_p5(self):
+        # The reviewer's probe: an audit over a population of 10 judged decisions was accepted although the run
+        # has 192 eligible decisions (here judged inline in the records), and P5 came out supported.
+        records, lines = judged_e2()
+        for r, line in zip(records, lines):
+            r["disclosed"] = json.loads(json.dumps(line["disclosed"]))
+        partial = [
+            {
+                **line,
+                "disclosed": {
+                    t: {d: v for d, v in m.items() if LABELS[d] == "arbitrary"} for t, m in line["disclosed"].items()
+                },
+            }
+            for line in lines[2:7]  # two plain and three assume trials of task00
+        ]
+        audit = bound_audit(partial, seed=1)  # a sample with both verdicts, so kappa is defined (1.0)
+        self.assertEqual(audit["population_size"], 10)
+        self.assertIsNone(judge.verify_audit(audit, partial)[1])  # internally consistent on its own
+        p5, result = self.p5(records, partial, audit)
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual(p5["eligible_decisions"], 192)
+        self.assertEqual(p5["verdict"], "inconclusive")
+        self.assertIsNone(p5["kappa"])
+        self.assertIn("covers 10 of 192 eligible E2 decisions", p5["note"])
+
+    def test_a_stale_audit_after_flipped_verdicts_does_not_unlock_p5(self):
+        # The reviewer's probe: flipping the judge's labels after the audit kept the audit's kappa = 1.0.
+        records, lines = judged_e2()
+        audit = bound_audit(lines)
+        self.assertEqual(self.p5(records, lines, audit)[0]["verdict"], "supported")
+        flipped = [
+            {**line, "disclosed": {t: {d: not v for d, v in m.items()} for t, m in line["disclosed"].items()}}
+            for line in lines
+        ]
+        p5, result = self.p5(records, flipped, audit)
+        self.assertEqual(p5["verdict"], "inconclusive")
+        self.assertIn("stale", p5["note"])
+        self.assertFalse(result["disclosure_audit"]["verified"])
+
+    def test_the_audit_kappa_is_recomputed_and_gated(self):
+        records, lines = judged_e2()
+        audit = bound_audit(lines, human=lambda entry: not entry["judge"])  # complete disagreement
+        p5, _ = self.p5(records, lines, audit)
+        self.assertEqual(p5["verdict"], "inconclusive")
+        self.assertLess(p5["kappa"], 0.6)
+        self.assertIn("< 0.6", p5["note"])
+        p5, _ = self.p5(records, lines, {**audit, "kappa": 0.9})  # a hand-edited kappa
+        self.assertIn("does not match its own labels", p5["note"])
+        p5, _ = self.p5(records, lines, None)
+        self.assertIn("no disclosure_audit.json", p5["note"])
+
+    def test_judge_output_takes_kappa_only_from_the_audit(self):
+        records, lines = judged_e2()
+        with self.assertRaisesRegex(ValueError, "kappa comes only from the verified audit"):
+            analyze(records, seed=1, kappa=0.8, n_boot=100, disclosures=lines)
+
+    def test_the_cli_has_no_kappa_override(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            analysis.main(["/nonexistent", "--kappa", "0.9"])
 
 
 if __name__ == "__main__":
